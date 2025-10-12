@@ -6,18 +6,18 @@
 //! potentially improving cache locality.
 //!
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 // --- Module Declarations ---
 // mod cursor;
 mod elem;
 mod index;
 mod pool;
-// mod list;
+mod list;
 
 // --- Public API Re-exports ---
 // pub use cursor::CursorMut;
 pub use elem::ListElem;
 pub use index::Index;
-// pub use list::{ListError, PieList};
+pub use list::PieList;
 pub use pool::{ElemPool, IndexError};

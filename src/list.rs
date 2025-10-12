@@ -4,6 +4,7 @@
 
 use crate::pool::{ElemPool, IndexError};
 use crate::index::Index;
+use crate::cursor::CursorMut;
 use std::marker::PhantomData;
 
 /// A handle to a doubly-linked list within a shared `ElemPool`.
@@ -19,8 +20,8 @@ use std::marker::PhantomData;
 /// will result in a memory leak within the pool.
 #[derive(Debug)]
 pub struct PieList<T> {
-    sentinel: Index<T>,
-    len: usize,
+    pub(crate) sentinel: Index<T>,
+    pub(crate) len: usize,
 }
 
 impl<T> PieList<T> {
@@ -158,6 +159,38 @@ impl<T> PieList<T> {
             len: self.len,
             _phantom: PhantomData,
         }
+    }
+
+    /// Returns a mutable cursor pointing to the first element of the list.
+    pub fn cursor_mut<'a>(&'a mut self, pool: &mut ElemPool<T>) -> CursorMut<'a, T> {
+        let first_elem = pool.next(self.sentinel);
+        // Pass only the list, index, and logical position.
+        CursorMut::new(self, first_elem, 0)
+    }
+
+    /// Returns a mutable cursor pointing to the element at the given logical index.
+    ///
+    /// Returns `Err(IndexError::IndexOutOfBounds)` if the index is out of bounds.
+    pub fn cursor_mut_at<'a>(&'a mut self, index: usize, pool: &mut ElemPool<T>
+    ) -> Result<CursorMut<'a, T>, IndexError> {
+        if index >= self.len {
+            return Err(IndexError::IndexOutOfBounds);
+        }
+        // To be efficient, we traverse from the closer end of the list.
+        let mut current_idx = self.sentinel;
+        if index < self.len / 2 {
+            // Traverse from the front
+            for _ in 0..=index {
+                current_idx = pool.next(current_idx);
+            }
+        } else {
+            // Traverse from the back
+            for _ in 0..(self.len - index) {
+                current_idx = pool.prev(current_idx);
+            }
+        }
+        // Pass only the list, index, and logical position.
+        Ok(CursorMut::new(self, current_idx, index))
     }
 }
 

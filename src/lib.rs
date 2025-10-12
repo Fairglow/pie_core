@@ -9,14 +9,14 @@
 #![deny(unsafe_code)]
 
 // --- Module Declarations ---
-// mod cursor;
+mod cursor;
 mod elem;
 mod index;
 mod pool;
 mod list;
 
 // --- Public API Re-exports ---
-// pub use cursor::CursorMut;
+pub use cursor::CursorMut;
 pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;

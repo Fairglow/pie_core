@@ -101,8 +101,7 @@ impl<T> ElemPool<T> {
     /// Checks if a given index points to an element that contains user data.
     #[inline]
     pub fn contains(&self, index: Index<T>) -> bool {
-        index
-            .get()
+        index.get()
             .and_then(|n| self.elems.get(n))
             .map(|e| e.is_used())
             .unwrap_or(false)

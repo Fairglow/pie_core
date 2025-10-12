@@ -2,59 +2,83 @@
 // Allow unsafe for the performance-critical iterator implementation.
 #![allow(unsafe_code)]
 
-use crate::pool::{ElemPool, IndexError};
-use crate::index::Index;
 use crate::cursor::CursorMut;
+use crate::index::Index;
+use crate::pool::{ElemPool, IndexError};
 use std::marker::PhantomData;
 
 /// A handle to a doubly-linked list within a shared `ElemPool`.
 ///
-/// A `PieList` holds a sentinel node index and tracks its length.
-/// All list operations require a mutable reference to the pool where the
-/// elements are actually stored.
+/// A `PieList` itself is a lightweight struct containing only an `Index` to a
+/// sentinel node and the list's length. All list elements are stored and managed
+/// by a separate `ElemPool`. This design allows for many `PieList`s to share
+/// memory from a single pool.
 ///
-/// # Important
+/// All operations that modify or access the list's elements, such as `push_back`
+/// or `front`, require a mutable or immutable reference to the `ElemPool` where
+/// the data is stored.
 ///
-/// When a `PieList` is no longer needed, you **must** call `clear()` on it
-/// to return its elements to the pool's free list. Failure to do so
-/// will result in a memory leak within the pool.
+/// # Important: Memory Management
+///
+/// When a `PieList` is dropped, the elements it references are **not** automatically
+/// returned to the pool. This is a deliberate design choice to allow lists to be
+/// moved and managed without unintended side effects on the pool.
+///
+/// To prevent memory leaks within the pool, you **must** call [`clear()`] on a list
+/// when you are finished with it. This will iterate through all its elements and
+/// return them to the pool's free list, making them available for reuse.
+///
+/// [`clear()`]: PieList::clear
 #[derive(Debug)]
 pub struct PieList<T> {
+    /// The index of the sentinel node for this list. The sentinel's `next`
+    /// points to the head of the list, and its `prev` points to the tail.
     pub(crate) sentinel: Index<T>,
+    /// The number of elements in the list.
     pub(crate) len: usize,
 }
 
 impl<T> PieList<T> {
     /// Creates a new, empty list handle.
     ///
-    /// This allocates a sentinel node from the pool to represent the head/tail
-    /// of the list.
+    /// This operation allocates a single sentinel node from the provided pool.
+    /// The sentinel acts as a fixed entry point for the list, simplifying the
+    /// logic for insertions and removals at the boundaries.
     ///
     /// # Panics
     ///
-    /// Panics if the pool fails to allocate a new element, which should
-    /// only happen in out-of-memory conditions.
+    /// Panics if the `ElemPool` cannot allocate a new element for the sentinel,
+    /// which would typically only happen in an out-of-memory situation.
     pub fn new(pool: &mut ElemPool<T>) -> Self {
-        let sentinel = pool.index_new().expect("Pool failed to allocate sentinel for new list");
-        Self {
-            sentinel,
-            len: 0,
-        }
+        let sentinel = pool
+            .index_new()
+            .expect("Pool failed to allocate sentinel for new list");
+        // The list is created empty, so the sentinel initially points to itself.
+        Self { sentinel, len: 0 }
     }
 
-    /// Returns the number of elements in the list. O(1).
+    /// Returns the number of elements in the list.
+    ///
+    /// # Complexity
+    /// O(1)
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns `true` if the list contains no elements. O(1).
+    /// Returns `true` if the list contains no elements.
+    ///
+    /// # Complexity
+    /// O(1)
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Provides a reference to the front element's data, or `None` if the list is empty.
+    ///
+    /// # Complexity
+    /// O(1)
     pub fn front<'a>(&self, pool: &'a ElemPool<T>) -> Option<&'a T> {
         if self.is_empty() {
             return None;
@@ -63,7 +87,10 @@ impl<T> PieList<T> {
     }
 
     /// Provides a mutable reference to the front element's data, or `None` if empty.
-    pub fn front_mut<'a>(&self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
+    ///
+    /// # Complexity
+    /// O(1)
+    pub fn front_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
         if self.is_empty() {
             return None;
         }
@@ -72,6 +99,9 @@ impl<T> PieList<T> {
     }
 
     /// Provides a reference to the back element's data, or `None` if the list is empty.
+    ///
+    /// # Complexity
+    /// O(1)
     pub fn back<'a>(&self, pool: &'a ElemPool<T>) -> Option<&'a T> {
         if self.is_empty() {
             return None;
@@ -80,7 +110,10 @@ impl<T> PieList<T> {
     }
 
     /// Provides a mutable reference to the back element's data, or `None` if empty.
-    pub fn back_mut<'a>(&self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
+    ///
+    /// # Complexity
+    /// O(1)
+    pub fn back_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
         if self.is_empty() {
             return None;
         }
@@ -88,7 +121,13 @@ impl<T> PieList<T> {
         pool.data_mut(back_idx)
     }
 
-    /// Adds an element to the front of the list. O(1).
+    /// Adds an element to the front of the list.
+    ///
+    /// # Complexity
+    /// O(1)
+    ///
+    /// # Errors
+    /// Returns an `IndexError` if the pool is unable to allocate a new element.
     pub fn push_front(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
@@ -97,7 +136,13 @@ impl<T> PieList<T> {
         Ok(())
     }
 
-    /// Adds an element to the back of the list. O(1).
+    /// Adds an element to the back of the list.
+    ///
+    /// # Complexity
+    /// O(1)
+    ///
+    /// # Errors
+    /// Returns an `IndexError` if the pool is unable to allocate a new element.
     pub fn push_back(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
@@ -106,7 +151,12 @@ impl<T> PieList<T> {
         Ok(())
     }
 
-    /// Removes the first element and returns its data, or `None` if the list is empty. O(1).
+    /// Removes the first element and returns its data, or `None` if the list is empty.
+    ///
+    /// The removed element's node is returned to the pool's free list.
+    ///
+    /// # Complexity
+    /// O(1)
     pub fn pop_front(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
         if self.is_empty() {
             return None;
@@ -119,7 +169,12 @@ impl<T> PieList<T> {
         data
     }
 
-    /// Removes the last element and returns its data, or `None` if the list is empty. O(1).
+    /// Removes the last element and returns its data, or `None` if the list is empty.
+    ///
+    /// The removed element's node is returned to the pool's free list.
+    ///
+    /// # Complexity
+    /// O(1)
     pub fn pop_back(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
         if self.is_empty() {
             return None;
@@ -132,12 +187,20 @@ impl<T> PieList<T> {
         data
     }
 
-    /// Removes all elements from the list, returning them to the pool's free list. O(n).
+    /// Removes all elements from the list, returning them to the pool's free list.
+    ///
+    /// This is a critical method for memory management. Failure to call `clear`
+    /// on a list that is no longer needed will result in its elements being
+    /// leaked within the pool, as they will never be added to the free list for reuse.
+    ///
+    /// # Complexity
+    /// O(n), where n is the number of elements in the list.
     pub fn clear(&mut self, pool: &mut ElemPool<T>) {
         while self.pop_front(pool).is_some() {}
     }
 
-    /// Returns an iterator that provides immutable references to the elements.
+    /// Returns an iterator that provides immutable references to the elements
+    /// from front to back.
     pub fn iter<'a>(&self, pool: &'a ElemPool<T>) -> Iter<'a, T> {
         Iter {
             pool,
@@ -148,7 +211,8 @@ impl<T> PieList<T> {
         }
     }
 
-    /// Returns an iterator that provides mutable references to the elements.
+    /// Returns an iterator that provides mutable references to the elements
+    /// from front to back.
     pub fn iter_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> IterMut<'a, T> {
         let front = pool.next(self.sentinel);
         let back = pool.prev(self.sentinel);
@@ -162,34 +226,45 @@ impl<T> PieList<T> {
     }
 
     /// Returns a mutable cursor pointing to the first element of the list.
+    ///
+    /// The cursor provides an efficient API for arbitrary insertion, deletion,
+    /// and moving through the list.
     pub fn cursor_mut<'a>(&'a mut self, pool: &mut ElemPool<T>) -> CursorMut<'a, T> {
         let first_elem = pool.next(self.sentinel);
-        // Pass only the list, index, and logical position.
         CursorMut::new(self, first_elem, 0)
     }
 
     /// Returns a mutable cursor pointing to the element at the given logical index.
     ///
-    /// Returns `Err(IndexError::IndexOutOfBounds)` if the index is out of bounds.
-    pub fn cursor_mut_at<'a>(&'a mut self, index: usize, pool: &mut ElemPool<T>
+    /// # Complexity
+    /// O(min(k, n-k)), where `k` is the index and `n` is the list's length.
+    /// The method traverses from the nearest end of the list to find the element.
+    ///
+    /// # Errors
+    /// Returns `Err(IndexError::IndexOutOfBounds)` if `index >= self.len()`.
+    pub fn cursor_mut_at<'a>(
+        &'a mut self,
+        index: usize,
+        pool: &mut ElemPool<T>,
     ) -> Result<CursorMut<'a, T>, IndexError> {
         if index >= self.len {
             return Err(IndexError::IndexOutOfBounds);
         }
         // To be efficient, we traverse from the closer end of the list.
-        let mut current_idx = self.sentinel;
+        let mut current_idx;
         if index < self.len / 2 {
             // Traverse from the front
+            current_idx = self.sentinel;
             for _ in 0..=index {
                 current_idx = pool.next(current_idx);
             }
         } else {
             // Traverse from the back
+            current_idx = self.sentinel;
             for _ in 0..(self.len - index) {
                 current_idx = pool.prev(current_idx);
             }
         }
-        // Pass only the list, index, and logical position.
         Ok(CursorMut::new(self, current_idx, index))
     }
 }
@@ -253,6 +328,8 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         // SAFETY: The lifetime 'a ties the output reference to the exclusive
         // borrow of the pool. The iterator's internal logic guarantees that we
         // never yield the same index twice, preventing aliased mutable references.
+        // We convert the mutable reference to a raw pointer to bypass the borrow
+        // checker's limitation on splitting borrows within a single method call.
         let pool_ptr = self.pool as *mut ElemPool<T>;
         unsafe { (*pool_ptr).data_mut(current) }
     }
@@ -266,14 +343,13 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         let current = self.back;
         self.back = self.pool.prev(current);
         self.len -= 1;
-        // SAFETY: The lifetime 'a ties the output reference to the exclusive
-        // borrow of the pool. The iterator's internal logic guarantees that we
-        // never yield the same index twice, preventing aliased mutable references.
+        // SAFETY: Same reasoning as in `next()`. The exclusive borrow on `self.pool`
+        // and the iterator's logic ensure that we do not create aliased mutable
+        // references.
         let pool_ptr = self.pool as *mut ElemPool<T>;
         unsafe { (*pool_ptr).data_mut(current) }
     }
 }
-
 
 // --- Test Suite for PieList ---
 

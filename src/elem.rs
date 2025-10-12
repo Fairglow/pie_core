@@ -3,15 +3,35 @@
 use crate::index::Index;
 use std::{fmt, mem};
 
+/// The fundamental node structure for a doubly-linked list.
+///
+/// Each `ListElem` contains optional data and indices pointing to the
+/// `next` and `prev` elements in its list. This struct is the unit of
+/// allocation within the `ElemPool`.
+///
+/// # Rationale
+///
+/// By embedding `Option<T>` directly, we colocate the list's structural
+/// information with the user's data. This improves cache performance for
+/// lists where `T` is reasonably small. A `data` value of `None` signifies
+/// that this element is either a sentinel node for a list or is currently
+/// on the pool's free list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListElem<T> {
+    /// The index of the next element in the list.
     pub(crate) next: Index<T>,
+    /// The index of the previous element in the list.
     pub(crate) prev: Index<T>,
+    /// The data stored in this element.
     /// `None` signifies a free or a sentinel list node.
     pub(crate) data: Option<T>,
 }
 
 impl<T> Default for ListElem<T> {
+    /// Creates a default `ListElem` with no data and invalid links.
+    ///
+    /// This is the initial state for a newly allocated element before it is
+    /// linked into a list or the free list.
     fn default() -> Self {
         Self {
             next: Index::NONE,
@@ -22,42 +42,58 @@ impl<T> Default for ListElem<T> {
 }
 
 impl<T> ListElem<T> {
+    /// A builder-style method to set the data for this element.
     #[inline]
     pub fn with_data(mut self, data: T) -> Self {
         self.data = Some(data);
         self
     }
+
+    /// A builder-style method to set both `next` and `prev` links to the same index.
+    /// This is useful for initializing a self-referential sentinel or a standalone element.
     #[inline]
     pub fn with_both(mut self, index: Index<T>) -> Self {
         self.next = index;
         self.prev = index;
         self
     }
-    /// Checks if the element is in use (i.e., contains data).
+
+    /// Checks if the element is in use (i.e., contains user data).
+    /// Returns `false` for free nodes and list sentinels.
     #[inline]
     pub fn is_used(&self) -> bool {
         self.data.is_some()
     }
+
+    /// Replaces the `next` index with a new one, returning the old index.
     #[inline]
     pub fn new_next(&mut self, next: Index<T>) -> Index<T> {
         mem::replace(&mut self.next, next)
     }
+
+    /// Replaces the `prev` index with a new one, returning the old index.
     #[inline]
     pub fn new_prev(&mut self, prev: Index<T>) -> Index<T> {
         mem::replace(&mut self.prev, prev)
     }
+
+    /// Replaces the `data` with a new `Option<T>`, returning the old data.
     #[inline]
     pub fn new_data(&mut self, data: Option<T>) -> Option<T> {
         mem::replace(&mut self.data, data)
     }
+
+    /// Replaces both `prev` and `next` links, returning the old pair.
     #[inline]
     pub fn new_links(&mut self, prev: Index<T>, next: Index<T>) -> (Index<T>, Index<T>) {
-        let prev = mem::replace(&mut self.prev, prev);
-        let next = mem::replace(&mut self.next, next);
-        (prev, next)
+        let old_prev = mem::replace(&mut self.prev, prev);
+        let old_next = mem::replace(&mut self.next, next);
+        (old_prev, old_next)
     }
+
+    /// Returns a tuple of the `(prev, next)` links.
     #[inline]
-    pub fn links(&mut self) -> (Index<T>, Index<T>) {
+    pub fn links(&self) -> (Index<T>, Index<T>) {
         (self.prev, self.next)
     }
 }
@@ -162,7 +198,6 @@ mod tests {
         // Sanity check: old_prev and old_next should be NONE initially
         assert!(old_prev.is_none());
         assert!(old_next.is_none());
-
 
         // Call the function under test
         let (returned_prev, returned_next) = elem.new_links(index3, index4);

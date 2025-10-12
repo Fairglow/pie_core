@@ -181,6 +181,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "index_list"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ed5081b1b06f52b85a18d364ce08a3f94424b0187aecd40c2e0d45e84e9309a"
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -243,6 +249,7 @@ name = "pielist"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "index_list",
 ]
 
 [[package]]

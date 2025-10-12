@@ -7,6 +7,7 @@ edition = "2024"
 
 [dev-dependencies]
 criterion = "0.7"
+index_list = "0.3"
 
 [[bench]]
 name = "benches"

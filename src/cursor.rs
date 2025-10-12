@@ -129,14 +129,19 @@ impl<'a, T> CursorMut<'a, T> {
         let original_back = pool.prev(self.list.sentinel);
 
         // 1. Form the new list: new_sentinel <-> original_front <-> ... <-> element_before_split <-> new_sentinel
-        pool.get_mut(new_list.sentinel)?.new_links(element_before_split, original_front);
+        pool.get_mut(new_list.sentinel)?
+            .new_links(element_before_split, original_front);
         pool.get_mut(original_front)?.new_prev(new_list.sentinel);
-        pool.get_mut(element_before_split)?.new_next(new_list.sentinel);
+        pool.get_mut(element_before_split)?
+            .new_next(new_list.sentinel);
 
         // 2. Form the original, now-shortened list: old_sentinel <-> self.current <-> ... <-> original_back <-> old_sentinel
-        pool.get_mut(self.list.sentinel)?.new_links(original_back, self.current);
+        pool.get_mut(self.list.sentinel)?
+            .new_links(original_back, self.current);
         pool.get_mut(self.current)?.new_prev(self.list.sentinel);
-        pool.get_mut(original_back).unwrap().new_next(self.list.sentinel);
+        pool.get_mut(original_back)
+            .unwrap()
+            .new_next(self.list.sentinel);
 
         // --- Update lengths and cursor state ---
         self.list.len = original_len - split_point_idx;
@@ -144,8 +149,47 @@ impl<'a, T> CursorMut<'a, T> {
         self.logical_index = 0; // The cursor is now at the start of the modified list.
         Ok(new_list)
     }
-}
 
+    /// Moves all elements from `other` into `self`'s list before the cursor.
+    ///
+    /// After the operation, `other` is left empty.
+    /// The cursor's position does not change, but its logical index is updated.
+    pub fn splice_before(
+        &mut self,
+        other: &mut PieList<T>,
+        pool: &mut ElemPool<T>,
+    ) -> Result<(), IndexError> {
+        if other.is_empty() {
+            return Ok(());
+        }
+
+        // Identify the boundary nodes.
+        let element_before_cursor = pool.prev(self.current);
+        let other_first = pool.next(other.sentinel);
+        let other_last = pool.prev(other.sentinel);
+
+        // Rewire the links to merge `other` into `self`.
+        pool.get_mut(element_before_cursor)?.new_next(other_first);
+        pool.get_mut(other_first)?.new_prev(element_before_cursor);
+        pool.get_mut(self.current)?.new_prev(other_last);
+        pool.get_mut(other_last)?.new_next(self.current);
+
+        // Update lengths and cursor index.
+        self.list.len += other.len;
+        self.logical_index += other.len;
+        other.len = 0;
+
+        // Reset the now-empty `other` list's sentinel to point to itself
+        // and return its old sentinel node to the free list.
+        // NOTE: We do not clear `other` because its elements are now in `self`.
+        // We only need to handle its sentinel.
+        let other_sentinel = other.sentinel;
+        other.sentinel = pool.index_new()?; // Get a new sentinel for the now-empty list
+        pool.index_del(other_sentinel)?;
+
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -221,8 +265,6 @@ mod tests {
         {
             let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
             cursor.insert_before(20, &mut pool).unwrap();
-
-            // FIX: Access list properties through the cursor.
             assert_eq!(cursor.list.len(), 3);
             assert_eq!(cursor.index(), Some(1));
             assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 20);
@@ -241,8 +283,6 @@ mod tests {
         {
             let mut cursor = list.cursor_mut(&mut pool);
             cursor.insert_after(20, &mut pool).unwrap();
-
-            // FIX: Access list properties through the cursor.
             assert_eq!(cursor.list.len(), 3);
             assert_eq!(cursor.index(), Some(0));
             assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 10);
@@ -260,8 +300,6 @@ mod tests {
 
         let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
         assert_eq!(cursor.remove_current(&mut pool), Some(20));
-
-        // FIX: Access list properties through the cursor.
         assert_eq!(cursor.list.len(), 2);
         assert_eq!(cursor.index(), Some(1));
         assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
@@ -280,8 +318,6 @@ mod tests {
         {
             let mut cursor = list1.cursor_mut_at(2, &mut pool).unwrap();
             list2 = cursor.split_before(&mut pool).unwrap();
-
-            // FIX: Assert on state via the cursor while it's alive.
             assert_eq!(cursor.list.len(), 3);
             assert_eq!(cursor.index(), Some(0));
             assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 3);
@@ -295,6 +331,28 @@ mod tests {
         assert_eq!(list1.len(), 3);
         let vec1: Vec<_> = list1.iter(&pool).copied().collect();
         assert_eq!(vec1, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn test_splice_before() {
+        let mut pool = ElemPool::new();
+        let mut list1 = list_with_items(&mut pool, &[10, 40]);
+        let mut list2 = list_with_items(&mut pool, &[20, 30]);
+
+        {
+            let mut cursor = list1.cursor_mut_at(1, &mut pool).unwrap(); // Cursor at 40
+            cursor.splice_before(&mut list2, &mut pool).unwrap();
+
+            // Check state while cursor is alive
+            assert_eq!(cursor.list.len(), 4);
+            assert!(list2.is_empty()); // Spliced list should be empty
+            assert_eq!(cursor.index(), Some(3)); // Index moved from 1 to 1+2=3
+            assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 40);
+        }
+
+        // Check final state of list1
+        let vec: Vec<_> = list1.iter(&pool).copied().collect();
+        assert_eq!(vec, vec![10, 20, 30, 40]);
     }
 
     #[test]

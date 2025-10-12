@@ -1,3 +1,5 @@
+[![Rust](https://github.com/Fairglow/pielist/actions/workflows/rust.yml/badge.svg)](https://github.com/Fairglow/pielist/actions/workflows/rust.yml)
+
 # **PieList: A High-Performance, Arena-Allocated Linked List**
 
 pielist is a Rust crate that provides a high-performance, doubly-linked list implementation. It is built on an arena allocation (or "pool") model, which offers significant performance benefits over traditional node-based linked lists in specific scenarios.  

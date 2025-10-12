@@ -1,5 +1,4 @@
 //! A mutable cursor for navigating and modifying a `PieList`.
-#![allow(unsafe_code)] // Unsafe is no longer used, but we keep the allow attribute for now.
 
 use crate::index::Index;
 use crate::list::PieList;
@@ -179,14 +178,13 @@ impl<'a, T> CursorMut<'a, T> {
         self.logical_index += other.len;
         other.len = 0;
 
-        // Reset the now-empty `other` list's sentinel to point to itself
-        // and return its old sentinel node to the free list.
-        // NOTE: We do not clear `other` because its elements are now in `self`.
-        // We only need to handle its sentinel.
+        // Reset the now-empty `other` list's sentinel to point to itself.
         let other_sentinel = other.sentinel;
-        other.sentinel = pool.index_new()?; // Get a new sentinel for the now-empty list
-        pool.index_del(other_sentinel)?;
+        pool.get_mut(other_sentinel)?
+            .new_links(other_sentinel, other_sentinel);
 
+        // After the splice, `other` is empty but still a valid list handle.
+        // The caller can choose to reuse it or let it be dropped.
         Ok(())
     }
 }

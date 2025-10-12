@@ -95,7 +95,7 @@ impl<T> ElemPool<T> {
 
     #[inline]
     pub fn list_count(&self) -> usize {
-        self.capacity() - self.used
+        self.capacity() - self.used - self.freed
     }
 
     /// Checks if a given index points to an element that contains user data.

@@ -250,9 +250,9 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         let current = self.front;
         self.front = self.pool.next(current);
         self.len -= 1;
-        // This is safe because we are iterating over each element exactly once.
-        // We convert the mutable reference to the pool into a raw pointer and then
-        // dereference it to bypass the borrow checker's limitations.
+        // SAFETY: The lifetime 'a ties the output reference to the exclusive
+        // borrow of the pool. The iterator's internal logic guarantees that we
+        // never yield the same index twice, preventing aliased mutable references.
         let pool_ptr = self.pool as *mut ElemPool<T>;
         unsafe { (*pool_ptr).data_mut(current) }
     }
@@ -266,6 +266,9 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         let current = self.back;
         self.back = self.pool.prev(current);
         self.len -= 1;
+        // SAFETY: The lifetime 'a ties the output reference to the exclusive
+        // borrow of the pool. The iterator's internal logic guarantees that we
+        // never yield the same index twice, preventing aliased mutable references.
         let pool_ptr = self.pool as *mut ElemPool<T>;
         unsafe { (*pool_ptr).data_mut(current) }
     }

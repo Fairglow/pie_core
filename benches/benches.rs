@@ -131,13 +131,39 @@ fn splice_before_benchmark(c: &mut Criterion) {
     });
 }
 
+/// Benchmark for sorting the `PieList`.
+fn pielist_sort_benchmark(c: &mut Criterion) {
+    c.bench_function("pielist_sort", |b| {
+        b.iter_batched(
+            // Setup: Create a list with elements in reverse order to ensure
+            // it's not already sorted.
+            || {
+                let mut pool = ElemPool::new();
+                let mut list = PieList::new(&mut pool);
+                for i in (0..LIST_SIZE).rev() {
+                    list.push_back(black_box(i as u64), &mut pool).unwrap();
+                }
+                (pool, list)
+            },
+            // Measured code: sort the list.
+            |(mut pool, mut list)| {
+                list.sort(&mut pool, |a, b| a.cmp(b));
+                // Black box the result to prevent the operation from being optimized away.
+                black_box(&mut list);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+}
+
 // Group the benchmarks and define the main entry point.
 criterion_group!(
     benches,
     push_back_benchmark,
     iter_benchmark,
     pielist_insert_remove_middle_benchmark,
-    index_list_insert_remove_middle_benchmark, // Add new benchmark here
-    splice_before_benchmark
+    index_list_insert_remove_middle_benchmark,
+    splice_before_benchmark,
+    pielist_sort_benchmark,
 );
 criterion_main!(benches);

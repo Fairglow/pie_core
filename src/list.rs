@@ -199,6 +199,161 @@ impl<T> PieList<T> {
         while self.pop_front(pool).is_some() {}
     }
 
+    /// Sorts the list in place using a stable merge sort algorithm.
+    ///
+    /// # Complexity
+    ///
+    /// O(n log n) comparisons, where `n` is the number of elements in the list.
+    /// The merge operations are done in-place without new allocations from the pool.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use pielist::{ElemPool, PieList};
+    /// # let mut pool = ElemPool::<i32>::new();
+    /// let mut list = PieList::new(&mut pool);
+    /// list.push_back(5, &mut pool).unwrap();
+    /// list.push_back(2, &mut pool).unwrap();
+    /// list.push_back(8, &mut pool).unwrap();
+    /// list.push_back(1, &mut pool).unwrap();
+    ///
+    /// // Sort in ascending order
+    /// list.sort(&mut pool, |a, b| a.cmp(b));
+    ///
+    /// let sorted: Vec<_> = list.iter(&pool).copied().collect();
+    /// assert_eq!(sorted, vec![1, 2, 5, 8]);
+    /// ```
+    pub fn sort<F>(&mut self, pool: &mut ElemPool<T>, mut compare: F)
+    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+        // This public method is a wrapper that calls the recursive helper.
+        // It allows the user to pass the closure by value, which is ergonomic.
+        self.sort_recursive(pool, &mut compare);
+    }
+
+    /// The internal recursive implementation of merge sort.
+    fn sort_recursive<F>(&mut self, pool: &mut ElemPool<T>, compare: &mut F)
+    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+        // A list of 0 or 1 elements is already sorted.
+        if self.len() < 2 {
+            return;
+        }
+        // Find the middle of the list to split it.
+        let mid_len = self.len() / 2;
+        let mut split_node = pool.next(self.sentinel);
+        for _ in 0..mid_len {
+            split_node = pool.next(split_node);
+        }
+        // Split the list. `self` becomes the right half, `left` gets the front elements.
+        let mut left = self.split_off(split_node, mid_len, pool).unwrap();
+        // Recursively sort both halves.
+        self.sort_recursive(pool, compare);
+        left.sort_recursive(pool, compare);
+        // Merge the sorted `self` (right half) into `left`, making `left` the final
+        // sorted list. We use `mem::replace` to move `self` into the function call.
+        let dummy_self = std::mem::replace(self, PieList::new(pool));
+        left.merge(dummy_self, pool, compare);
+        // Move the final sorted list from `left` back into `self`.
+        *self = left;
+    }
+
+    /// Merges two sorted lists. `self` is assumed to be one sorted list,
+    /// and `other` is the second. After the operation, `self` will contain
+    /// all elements from both lists in sorted order, and `other` will be empty.
+    fn merge<F>(&mut self, mut other: PieList<T>, pool: &mut ElemPool<T>, compare: &mut F)
+    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+        // If the other list is empty, there's nothing to do.
+        if other.is_empty() {
+            return;
+        }
+        // If this list is empty, we can perform an O(1) splice to take other's elements.
+        if self.is_empty() {
+            self.splice(self.sentinel, &mut other, pool).unwrap();
+            return;
+        }
+        // The current node in `self` that we are comparing against.
+        let mut current_self_node = pool.next(self.sentinel);
+        // Loop as long as there are elements to compare in both lists.
+        while !other.is_empty() && current_self_node != self.sentinel {
+            // These unwraps are safe because the loop conditions guarantee both lists
+            // have at least one element and that current_self_node is not the sentinel.
+            let self_data = pool.data(current_self_node).unwrap();
+            let other_data = other.front(pool).unwrap();
+            // If the `other` node is smaller or equal, move it into `self`.
+            // The equality check is crucial for maintaining a stable sort.
+            if compare(other_data, self_data) == std::cmp::Ordering::Less {
+                let node_to_move = pool.next(other.sentinel);
+                // Unlink the node from the front of `other`.
+                pool.index_linkout(node_to_move).unwrap();
+                other.len -= 1;
+                // Link it into `self` right before the current node.
+                pool.index_link_before(node_to_move, current_self_node).unwrap();
+                self.len += 1;
+            } else {
+                // The `self` node is smaller, so it's in the correct place.
+                // Advance to the next node in `self` for the next comparison.
+                current_self_node = pool.next(current_self_node);
+            }
+        }
+        // If `other` still has elements, they are all larger than any in `self`.
+        // We can efficiently splice the remainder onto the end of `self`.
+        if !other.is_empty() {
+            self.splice(self.sentinel, &mut other, pool).unwrap();
+        }
+    }
+
+    /// Splits the list before the given `split_node`. The original list (`self`) will
+    /// contain all elements from `split_node` onwards, and a new list containing
+    /// elements before `split_node` is returned.
+    pub(crate) fn split_off(
+        &mut self,
+        split_node: Index<T>,
+        split_len: usize, // The length of the new list being returned
+        pool: &mut ElemPool<T>,
+    ) -> Result<PieList<T>, IndexError> {
+        let original_len = self.len();
+        if split_len == 0 {
+            return Ok(PieList::new(pool));
+        }
+        let mut new_list = PieList::new(pool);
+        let original_front = pool.next(self.sentinel);
+        let element_before_split = pool.prev(split_node);
+        // Form the new list: (new_sentinel) <-> original_front <-> ... <-> element_before_split <-> (new_sentinel)
+        pool.get_mut(new_list.sentinel)?
+            .new_links(element_before_split, original_front);
+        pool.get_mut(original_front)?.new_prev(new_list.sentinel);
+        pool.get_mut(element_before_split)?
+            .new_next(new_list.sentinel);
+        // Form the now-shortened original list: (self.sentinel) <-> split_node <-> ...
+        pool.get_mut(self.sentinel)?.new_next(split_node);
+        pool.get_mut(split_node)?.new_prev(self.sentinel);
+        self.len = original_len - split_len;
+        new_list.len = split_len;
+        Ok(new_list)
+    }
+
+    /// Splices the `other` list into `self` before `insertion_node`.
+    pub(crate) fn splice(
+        &mut self,
+        insertion_node: Index<T>,
+        other: &mut PieList<T>,
+        pool: &mut ElemPool<T>,
+    ) -> Result<(), IndexError> {
+        let other_len = other.len;
+        let other_sentinel = other.sentinel;
+        let element_before_cursor = pool.prev(insertion_node);
+        let other_first = pool.next(other_sentinel);
+        let other_last = pool.prev(other_sentinel);
+        pool.get_mut(element_before_cursor)?.new_next(other_first);
+        pool.get_mut(other_first)?.new_prev(element_before_cursor);
+        pool.get_mut(insertion_node)?.new_prev(other_last);
+        pool.get_mut(other_last)?.new_next(insertion_node);
+        self.len += other_len;
+        other.len = 0;
+        pool.get_mut(other_sentinel)?
+            .new_links(other_sentinel, other_sentinel);
+        Ok(())
+    }
+
     /// Returns an iterator that provides immutable references to the elements
     /// from front to back.
     pub fn iter<'a>(&self, pool: &'a ElemPool<T>) -> Iter<'a, T> {
@@ -494,5 +649,64 @@ mod tests {
         list2.push_back("new", &mut pool).unwrap();
         assert_eq!(list2.len(), 1);
         assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn test_sort() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        // Sort empty list
+        list.sort(&mut pool, |a: &i32, b| a.cmp(b));
+        assert!(list.is_empty());
+
+        // Sort single-element list
+        list.push_back(10, &mut pool).unwrap();
+        list.sort(&mut pool, |a, b| a.cmp(b));
+        assert_eq!(*list.front(&pool).unwrap(), 10);
+        list.clear(&mut pool);
+
+        // Sort multi-element list
+        list.push_back(5, &mut pool).unwrap();
+        list.push_back(2, &mut pool).unwrap();
+        list.push_back(8, &mut pool).unwrap();
+        list.push_back(1, &mut pool).unwrap();
+
+        list.sort(&mut pool, |a, b| a.cmp(b));
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, vec![1, 2, 5, 8]);
+
+        // Sort already-sorted list
+        list.sort(&mut pool, |a, b| a.cmp(b));
+        let sorted2: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted2, vec![1, 2, 5, 8]);
+
+        // Sort reverse-sorted list
+        list.sort(&mut pool, |a, b| b.cmp(a));
+        let sorted3: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted3, vec![8, 5, 2, 1]);
+    }
+
+    #[test]
+    fn test_sort_stability() {
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        struct Item { key: i32, val: char }
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        list.push_back(Item { key: 2, val: 'a' }, &mut pool).unwrap();
+        list.push_back(Item { key: 1, val: 'b' }, &mut pool).unwrap();
+        list.push_back(Item { key: 2, val: 'c' }, &mut pool).unwrap();
+        list.push_back(Item { key: 0, val: 'd' }, &mut pool).unwrap();
+        list.push_back(Item { key: 1, val: 'e' }, &mut pool).unwrap();
+
+        // Sort by key. The relative order of items with the same key should be preserved.
+        list.sort(&mut pool, |a, b| a.key.cmp(&b.key));
+
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, vec![
+            Item { key: 0, val: 'd' }, Item { key: 1, val: 'b' }, Item { key: 1, val: 'e' }, // 'b' before 'e'
+            Item { key: 2, val: 'a' }, Item { key: 2, val: 'c' }, // 'a' before 'c'
+        ]);
     }
 }

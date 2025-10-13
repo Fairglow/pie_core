@@ -75,6 +75,29 @@ impl<'a, T> CursorMut<'a, T> {
         }
     }
 
+    /// Provides a reference to the element at the cursor's current position.
+    ///
+    /// If the cursor is not pointing at a valid element (e.g., it's past the end),
+    /// this returns `None`.
+    ///
+    /// # Example
+    /// ```
+    /// # use pielist::{ElemPool, PieList};
+    /// # let mut pool = ElemPool::new();
+    /// # let mut list = PieList::new(&mut pool);
+    /// # list.push_back(10, &mut pool).unwrap();
+    /// let mut cursor = list.cursor_mut(&mut pool);
+    ///
+    /// assert_eq!(cursor.peek(&pool), Some(&10));
+    /// ```
+    pub fn peek<'p>(&self, pool: &'p ElemPool<T>) -> Option<&'p T> {
+        if self.current == self.list.sentinel {
+            None
+        } else {
+            pool.data(self.current)
+        }
+    }
+
     /// Provides a mutable reference to the element at the cursor's current position.
     ///
     /// If the cursor is not pointing at a valid element (e.g., it's past the end),
@@ -323,44 +346,9 @@ impl<'a, T> CursorMut<'a, T> {
     /// assert_eq!(front_list.front(&pool), Some(&10));
     /// ```
     pub fn split_before(&mut self, pool: &mut ElemPool<T>) -> Result<PieList<T>, IndexError> {
-        let original_len = self.list.len();
-        let split_point_idx = self.logical_index;
-        if split_point_idx == 0 {
-            // Nothing to split off, return a new empty list.
-            return Ok(PieList::new(pool));
-        }
-
-        let mut new_list = PieList::new(pool);
-        // Identify the four key "boundary" nodes.
-        let original_front = pool.next(self.list.sentinel);
-        let element_before_split = pool.prev(self.current);
-        let original_back = pool.prev(self.list.sentinel);
-
-        // --- Rewire links ---
-
-        // 1. Form the new list:
-        //    (new_sentinel) <-> (original_front) <-> ... <-> (element_before_split) <-> (new_sentinel)
-        pool.get_mut(new_list.sentinel)?
-            .new_links(element_before_split, original_front);
-        pool.get_mut(original_front)?.new_prev(new_list.sentinel);
-        pool.get_mut(element_before_split)?
-            .new_next(new_list.sentinel);
-
-        // 2. Form the original, now-shortened list:
-        //    (old_sentinel) <-> (self.current) <-> ... <-> (original_back) <-> (old_sentinel)
-        pool.get_mut(self.list.sentinel)?
-            .new_links(original_back, self.current);
-        pool.get_mut(self.current)?.new_prev(self.list.sentinel);
-        // The original back might not exist if we split off everything, but `self.current`
-        // would become the new back and its `next` points to sentinel, so this works.
-        // We can safely unwrap because `original_back` must be a valid node if `split_point_idx > 0`.
-        pool.get_mut(original_back)
-            .unwrap()
-            .new_next(self.list.sentinel);
-
-        // --- Update lengths and cursor state ---
-        self.list.len = original_len - split_point_idx;
-        new_list.len = split_point_idx;
+        let new_list = self.list
+            .split_off(self.current, self.logical_index, pool)?;
+        // The cursor now points to the same element, which is the new head of the modified list.
         self.logical_index = 0; // The cursor is now at the start of the modified list.
         Ok(new_list)
     }
@@ -411,33 +399,12 @@ impl<'a, T> CursorMut<'a, T> {
         other: &mut PieList<T>,
         pool: &mut ElemPool<T>,
     ) -> Result<(), IndexError> {
-        if other.is_empty() {
+        let other_len = other.len();
+        if other_len == 0 {
             return Ok(());
         }
-
-        // Identify the boundary nodes.
-        let element_before_cursor = pool.prev(self.current);
-        let other_first = pool.next(other.sentinel);
-        let other_last = pool.prev(other.sentinel);
-
-        // Rewire the links to merge `other` into `self`.
-        // (element_before_cursor) <-> (other_first)
-        pool.get_mut(element_before_cursor)?.new_next(other_first);
-        pool.get_mut(other_first)?.new_prev(element_before_cursor);
-        // (other_last) <-> (self.current)
-        pool.get_mut(self.current)?.new_prev(other_last);
-        pool.get_mut(other_last)?.new_next(self.current);
-
-        // Update lengths and cursor index.
-        self.list.len += other.len;
-        self.logical_index += other.len;
-        other.len = 0;
-
-        // Reset the now-empty `other` list's sentinel to point to itself.
-        let other_sentinel = other.sentinel;
-        pool.get_mut(other_sentinel)?
-            .new_links(other_sentinel, other_sentinel);
-
+        self.list.splice(self.current, other, pool)?;
+        self.logical_index += other_len;
         Ok(())
     }
 }

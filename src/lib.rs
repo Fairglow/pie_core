@@ -76,6 +76,7 @@ mod elem;
 mod index;
 mod list;
 mod pool;
+mod fibheap;
 
 // --- Public API Re-exports ---
 pub use cursor::CursorMut;
@@ -83,3 +84,4 @@ pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
 pub use pool::{ElemPool, IndexError};
+pub use fibheap::{FibHeap, NodeHandle as FibHeapHandle};

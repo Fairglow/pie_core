@@ -38,6 +38,14 @@ pub struct PieList<T> {
     pub(crate) len: usize,
 }
 
+impl<T> Clone for PieList<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for PieList<T> {}
+
 impl<T> PieList<T> {
     /// Creates a new, empty list handle.
     ///

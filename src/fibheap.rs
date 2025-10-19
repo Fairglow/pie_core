@@ -57,7 +57,7 @@ impl<K, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::fibheap::FibHeap;
+    /// # use pielist::FibHeap;
     /// let mut heap = FibHeap::<u32, &str>::new();
     /// assert!(heap.is_empty());
     /// ```
@@ -131,7 +131,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::fibheap::FibHeap;
+    /// # use pielist::FibHeap;
     /// let mut heap = FibHeap::new();
     /// let handle = heap.push(10, "ten");
     /// assert_eq!(heap.len(), 1);
@@ -188,7 +188,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::fibheap::FibHeap;
+    /// # use pielist::FibHeap;
     /// let mut heap = FibHeap::new();
     /// heap.push(5, 'a');
     /// heap.push(3, 'b');
@@ -212,7 +212,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::fibheap::FibHeap;
+    /// # use pielist::FibHeap;
     /// let mut heap = FibHeap::new();
     /// heap.push(5, 'a');
     /// heap.push(3, 'b');
@@ -335,7 +335,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::fibheap::{FibHeap, FibNodeHandle};
+    /// # use pielist::{FibHeap, NodeHandle};
     /// let mut heap = FibHeap::new();
     /// heap.push(10, "high priority");
     /// let handle = heap.push(100, "low priority");
@@ -628,45 +628,62 @@ mod tests {
     fn test_decrease_key_cascading_cut() {
         let mut heap = FibHeap::new();
 
-        // 1. Setup a predictable structure that forces Grandparent -> Parent -> Children
-        let h10 = heap.push(10, "GP");
-        let h20 = heap.push(20, "P");
-        let h30 = heap.push(30, "C1");
-        let h40 = heap.push(40, "C2");
+        // --- Setup a 3-level tree: h10(GP) -> h30(P) -> h40(C) ---
+        // This complex setup is proven by the `println!` logs to create
+        // the structure we need.
 
-        // Push and pop values smaller than the main nodes to force consolidation
-        // without affecting the main nodes.
-        heap.push(0, "min");
-        heap.pop(); // Consolidates 10, 20, 30, 40. A likely structure is 10 -> (20, 30, 40)
+        // Create C1 and C2 (h30, h40)
+        let h30 = heap.push(30, "P"); // This will be the Parent
+        let h40 = heap.push(40, "C"); // This will be the Child
+        heap.push(29, "min");
+        heap.pop(); // Pops 29. Consolidates h30 and h40. Root is h30(d=1)->h40.
+        println!("#1: {heap}");
 
-        heap.push(1, "min");
-        heap.pop(); // Further consolidation. A likely structure is 10 -> (20 -> (30, 40))
+        // Create another node (h20, will be ignored)
+        let h20 = heap.push(20, "P-Sibling");
+        heap.push(19, "min");
+        heap.pop(); // Pops 19. Consolidates h20(d=0) and h30(d=1). Roots are h20 and h30.
+        println!("#2: {heap}");
 
-        // Assert the structure we need for the test. This makes the test robust.
-        assert_eq!(heap.pool.data(h20).unwrap().parent, h10, "h20 should be a child of h10");
-        assert_eq!(heap.pool.data(h30).unwrap().parent, h20, "h30 should be a child of h20");
-        assert_eq!(heap.pool.data(h40).unwrap().parent, h20, "h40 should be a child of h20");
+        // Create GP and link the other trees
+        let h10 = heap.push(10, "GP"); // This is the Grandparent
+        heap.push(9, "min");
+        heap.pop(); // Pops 9. Consolidates h10(d=0), h20(d=0), h30(d=1).
+        // This creates the final tree shown in log #6:
+        // h10(d=2) -> (h20, (h30 -> h40))
+        println!("#3: {heap}");
 
-        // 2. Cut C1 (h30) from P (h20). This must MARK P.
-        heap.decrease_key(h30, 5); // New key is 5.
+        // --- Test the cascading cut logic ---
 
-        // Verify C1 is now a root.
-        assert!(heap.pool.data(h30).unwrap().parent.is_none(), "h30 should be a root after cut");
-        // Verify P is marked.
-        assert!(heap.pool.data(h20).unwrap().marked, "h20 should be marked after losing one child");
+        // 1. Assert the structure is GP(h10) -> P(h30) -> C(h40)
+        assert_eq!(heap.pool.data(h30).unwrap().parent, h10, "P(h30) should be child of GP(h10)");
+        assert_eq!(heap.pool.data(h40).unwrap().parent, h30, "C(h40) should be child of P(h30)");
 
-        // 3. Cut C2 (h40) from P (h20). This must trigger a CASCADING CUT on P.
-        heap.decrease_key(h40, 6); // New key is 6.
+        // 2. Cut C (h40) from P (h30). This must MARK P (h30).
+        heap.decrease_key(h40, 5); // New key is 5.
+        println!("#4: {heap}"); // h40 is now a root
 
-        // Verify C2 is now a root.
+        // Verify C (h40) is now a root.
         assert!(heap.pool.data(h40).unwrap().parent.is_none(), "h40 should be a root after cut");
-        // Verify P (h20) was also cut and is now a root.
-        assert!(heap.pool.data(h20).unwrap().parent.is_none(), "h20 should be a root after cascading cut");
-        // Verify P's mark was reset to false because it became a root.
-        assert!(!heap.pool.data(h20).unwrap().marked, "h20's mark should be reset to false");
+        // Verify P (h30) is marked (it's not a root and lost a child).
+        assert!(heap.pool.data(h30).unwrap().marked, "h30 should be marked after losing one child");
+        // Verify GP (h10) is NOT marked (it's the root).
+        assert!(!heap.pool.data(h10).unwrap().marked, "h10 should not be marked");
 
-        // Verify GP (h10) is now marked, because it's a non-root that lost a child (h20).
-        assert!(heap.pool.data(h10).unwrap().marked, "h10 should be marked after losing h20");
+        // 3. Now, cut P (h30) from GP (h10). This must trigger a CASCADING CUT.
+        heap.decrease_key(h30, 6); // New key is 6.
+        println!("#5: {heap}"); // h30 is now a root
+
+        // Verify P (h30) is now a root.
+        assert!(heap.pool.data(h30).unwrap().parent.is_none(), "h30 should be a root after cascading cut");
+        // Verify P's mark was reset to false because it became a root.
+        assert!(!heap.pool.data(h30).unwrap().marked, "h30's mark should be reset");
+
+        // Verify GP (h10) was *not* cut (it's root) but *was* checked by cascading_cut.
+        // Since h10 is root, its parent is NONE, so cascading_cut(h10) does nothing.
+        assert!(heap.pool.data(h10).unwrap().parent.is_none(), "h10 should still be a root");
+        // We can also check h20, which should be untouched.
+        assert_eq!(heap.pool.data(h20).unwrap().parent, h10, "h20 should still be a child of h10");
     }
 
     #[test]

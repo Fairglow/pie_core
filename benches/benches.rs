@@ -8,7 +8,7 @@ use std::collections::BinaryHeap;
 use std::cmp::Reverse; // To turn max-heaps into min-heaps
 use fibonacci_heap::FibonacciHeap as ExtFibHeap;
 use priority_queue::PriorityQueue;
-use rand::{SeedableRng, Rng};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 // ---------------------------------
@@ -23,7 +23,7 @@ const HEAP_SIZE: usize = 1000; // Use the same size for heap tests
 /// Benchmark for appending elements to the end of the list.
 /// This measures the combined performance of pool allocation and linking.
 fn push_back_benchmark(c: &mut Criterion) {
-    c.bench_function("pielist_push_back", |b| {
+    c.bench_function("pielist-push_back", |b| {
         b.iter_batched(
             // Setup: Create a new pool and list for each iteration to measure
             // from a clean state.
@@ -54,7 +54,7 @@ fn iter_benchmark(c: &mut Criterion) {
         list.push_back(i as u64, &mut pool).unwrap();
     }
 
-    c.bench_function("pielist_iter_sum", |b| {
+    c.bench_function("pielist-iter_sum", |b| {
         b.iter(|| {
             // Summing the elements ensures the compiler doesn't optimize away the loop.
             let sum: u64 = list.iter(&pool).sum();
@@ -67,7 +67,7 @@ fn iter_benchmark(c: &mut Criterion) {
 /// in the middle of the list. This is where a `Vec` would perform poorly due
 /// to needing to shift all subsequent elements.
 fn pielist_insert_remove_middle_benchmark(c: &mut Criterion) {
-    c.bench_function("pielist_cursor_insert_remove_middle", |b| {
+    c.bench_function("pielist-insert_remove_middle", |b| {
         b.iter_batched(
             // Setup: Create a pre-filled list for each run.
             || {
@@ -92,7 +92,7 @@ fn pielist_insert_remove_middle_benchmark(c: &mut Criterion) {
 
 /// Comparison benchmark for the same "insert/remove middle" operation using `index_list`.
 fn index_list_insert_remove_middle_benchmark(c: &mut Criterion) {
-    c.bench_function("index_list_insert_remove_middle", |b| {
+    c.bench_function("index_list-insert_remove_middle", |b| {
         b.iter_batched(
             // Setup: Create a pre-filled IndexList.
             || {
@@ -120,7 +120,7 @@ fn index_list_insert_remove_middle_benchmark(c: &mut Criterion) {
 /// This operation is O(1) in a linked list but would be O(n) in a `Vec`.
 /// This benchmark showcases one of the most powerful features of the cursor API.
 fn splice_before_benchmark(c: &mut Criterion) {
-    c.bench_function("pielist_splice_before_middle", |b| {
+    c.bench_function("pielist-splice_before_middle", |b| {
         b.iter_batched(
             // Setup: Create two lists, one to splice into and one to consume.
             || {
@@ -148,7 +148,7 @@ fn splice_before_benchmark(c: &mut Criterion) {
 
 /// Benchmark for sorting the `PieList`.
 fn pielist_sort_benchmark(c: &mut Criterion) {
-    c.bench_function("pielist_sort", |b| {
+    c.bench_function("pielist-sort", |b| {
         b.iter_batched(
             // Setup: Create a list with elements in reverse order to ensure
             // it's not already sorted.
@@ -182,7 +182,7 @@ fn pielist_sort_benchmark(c: &mut Criterion) {
 fn bench_heap_push(c: &mut Criterion) {
     let mut group = c.benchmark_group("heap_push_sequential");
 
-    group.bench_function("pielist_fibheap_push", |b| {
+    group.bench_function("pielist-push", |b| {
         b.iter_batched(
             || PieFibHeap::<usize, usize>::new(),
             |mut heap| {
@@ -194,7 +194,7 @@ fn bench_heap_push(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("extfibheap_push", |b| {
+    group.bench_function("extfibheap-push", |b| {
         b.iter_batched(
             || ExtFibHeap::new(),
             |mut heap| {
@@ -206,7 +206,7 @@ fn bench_heap_push(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("binaryheap_push", |b| {
+    group.bench_function("binaryheap-push", |b| {
         b.iter_batched(
             || BinaryHeap::<(Reverse<usize>, usize)>::new(),
             |mut heap| {
@@ -219,7 +219,7 @@ fn bench_heap_push(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("priorityqueue_push", |b| {
+    group.bench_function("priorityqueue-push", |b| {
         b.iter_batched(
             || PriorityQueue::<usize, Reverse<usize>>::new(),
             |mut heap| {
@@ -249,7 +249,7 @@ fn bench_heap_pop_all(c: &mut Criterion) {
     let mut random_keys: Vec<usize> = (0..HEAP_SIZE).collect();
     random_keys.shuffle(&mut rng);
 
-    group.bench_function("pielist_fibheap_pop_all", |b| {
+    group.bench_function("pielist-pop_all", |b| {
         b.iter_batched(
             || {
                 let mut heap = PieFibHeap::new();
@@ -267,7 +267,7 @@ fn bench_heap_pop_all(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("extfibheap_pop_all", |b| {
+    group.bench_function("extfibheap-pop_all", |b| {
         b.iter_batched(
             || {
                 let mut heap = ExtFibHeap::new();
@@ -285,7 +285,7 @@ fn bench_heap_pop_all(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("binaryheap_pop_all", |b| {
+    group.bench_function("binaryheap-pop_all", |b| {
         b.iter_batched(
             || {
                 let mut heap = BinaryHeap::new();
@@ -303,7 +303,7 @@ fn bench_heap_pop_all(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("priorityqueue_pop_all", |b| {
+    group.bench_function("priorityqueue-pop_all", |b| {
         b.iter_batched(
             || {
                 let mut heap = PriorityQueue::new();
@@ -331,26 +331,37 @@ fn bench_heap_pop_all(c: &mut Criterion) {
 fn bench_heap_decrease_key(c: &mut Criterion) {
     let mut group = c.benchmark_group("heap_decrease_key_random");
 
-    // Setup: Create random indices to update and new (smaller) keys to use.
+    // Setup: Create random indices to update.
     let mut rng = StdRng::seed_from_u64(42);
-    let random_indices: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.random_range(0..HEAP_SIZE)).collect();
-    let random_new_keys: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.random_range(0..HEAP_SIZE)).collect();
+    let mut random_indices: Vec<usize> = (0..HEAP_SIZE).collect();
+    // We shuffle the indices to ensure we update nodes in a random order,
+    // which is a more realistic workload.
+    random_indices.shuffle(&mut rng);
 
-    group.bench_function("pielist_fibheap_decrease_key", |b| {
+    // This vector is no longer needed, as we will generate keys sequentially.
+    // let random_new_keys: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.gen_range(0..HEAP_SIZE)).collect();
+
+    group.bench_function("pielist-decrease_key", |b| {
         b.iter_batched(
             || {
                 let mut heap = PieFibHeap::new();
                 let mut handles = Vec::with_capacity(HEAP_SIZE);
                 for i in 0..HEAP_SIZE {
-                    handles.push(heap.push(usize::MAX, i));
+                    // MODIFICATION: Initialize with a key that is guaranteed to be
+                    // larger than any key we will decrease to.
+                    handles.push(heap.push(HEAP_SIZE * 2, i));
                 }
                 (heap, handles)
             },
             |(mut heap, handles)| {
+                // MODIFICATION: Iterate through the shuffled indices to ensure each
+                // node is updated exactly once per batch run.
                 for i in 0..HEAP_SIZE {
+                    // The handle to the node we will update.
                     let handle = handles[random_indices[i]];
-                    let new_key = random_new_keys[i];
-                    // We black_box the key to ensure the comparison happens.
+                    // The new key is `i`. Since the initial key was HEAP_SIZE * 2,
+                    // this is always a valid decrease (e.g., 2000 -> 0, 2000 -> 1, etc.).
+                    let new_key = i;
                     heap.decrease_key(handle, black_box(new_key));
                 }
             },
@@ -358,20 +369,21 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("priorityqueue_change_priority", |b| {
+    group.bench_function("priorityqueue-change_priority", |b| {
         b.iter_batched(
             || {
                 let mut heap = PriorityQueue::new();
                 for i in 0..HEAP_SIZE {
-                    heap.push(i, Reverse(usize::MAX));
+                    // MODIFICATION: Use the same larger initial key.
+                    heap.push(i, Reverse(HEAP_SIZE * 2));
                 }
-                // For PriorityQueue, the "handle" is just the item ID (i).
                 heap
             },
             |mut heap| {
+                // MODIFICATION: Use the same logic as the pielist bench.
                 for i in 0..HEAP_SIZE {
                     let item_id = &random_indices[i];
-                    let new_key = random_new_keys[i];
+                    let new_key = i;
                     heap.change_priority(item_id, black_box(Reverse(new_key)));
                 }
             },
@@ -379,22 +391,21 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("binaryheap_push_workaround", |b| {
+    group.bench_function("binaryheap-push", |b| {
         b.iter_batched(
             || {
                 let mut heap = BinaryHeap::new();
                 for i in 0..HEAP_SIZE {
-                    heap.push((Reverse(usize::MAX), i));
+                    // MODIFICATION: Use the same larger initial key.
+                    heap.push((Reverse(HEAP_SIZE * 2), i));
                 }
-                // The "handles" are just the item IDs (i).
                 heap
             },
             |mut heap| {
-                // This isn't a decrease_key, but the common workaround:
-                // just push the new, better-priority item.
+                // MODIFICATION: Use the same logic as the pielist bench.
                 for i in 0..HEAP_SIZE {
                     let item_id = random_indices[i];
-                    let new_key = random_new_keys[i];
+                    let new_key = i;
                     heap.push(black_box((Reverse(new_key), item_id)));
                 }
             },

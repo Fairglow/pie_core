@@ -47,11 +47,11 @@ fn main() {
     println!("\n   Step A: Build the required tree structure.");
 
     // Push 8 nodes. We only need handles for the ones in our target chain and their siblings.
-    let h20 = cascade_heap.push(20, "Great-Grandparent");
+    let _h20 = cascade_heap.push(20, "Great-Grandparent");
     let _h30 = cascade_heap.push(30, "GGP-Sibling-1");
     let _h40 = cascade_heap.push(40, "GGP-Sibling-2");
     let _h50 = cascade_heap.push(50, "P-Sibling");
-    let h60 = cascade_heap.push(60, "Grandparent");
+    let _h60 = cascade_heap.push(60, "Grandparent");
     let h70 = cascade_heap.push(70, "GP-Sibling");
     let h80 = cascade_heap.push(80, "Parent");
     let h90 = cascade_heap.push(90, "Child");

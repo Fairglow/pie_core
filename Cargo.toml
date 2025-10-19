@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",  # This refers to your main library/binary package at the root
+    "examples/bench-table"
+]
+
 [package]
 name = "pielist"
 version = "0.2.0"

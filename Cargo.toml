@@ -1,13 +1,17 @@
 [package]
 name = "pielist"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+rand = "0.9"
 
 [dev-dependencies]
 criterion = "0.7"
 index_list = "0.3"
+fibonacci_heap = "0.8"
+priority-queue = "2.7"
+rand = "0.9"
 
 [[bench]]
 name = "benches"

@@ -1,9 +1,24 @@
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
-use pielist::{ElemPool, PieList};
+use pielist::{ElemPool, PieList, FibHeap as PieFibHeap};
 use index_list::IndexList; // Import the crate for comparison
 
+// --- Imports for heap benchmarks ---
+use std::collections::BinaryHeap;
+use std::cmp::Reverse; // To turn max-heaps into min-heaps
+use fibonacci_heap::FibonacciHeap as ExtFibHeap;
+use priority_queue::PriorityQueue;
+use rand::{SeedableRng, Rng};
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
+// ---------------------------------
+
 const LIST_SIZE: usize = 1000;
+const HEAP_SIZE: usize = 1000; // Use the same size for heap tests
+
+// ##################################################################
+// # PieList Benchmarks
+// ##################################################################
 
 /// Benchmark for appending elements to the end of the list.
 /// This measures the combined performance of pool allocation and linking.
@@ -156,14 +171,255 @@ fn pielist_sort_benchmark(c: &mut Criterion) {
     });
 }
 
+
+// ##################################################################
+// # FibHeap Benchmarks
+// ##################################################################
+
+// --- Scenario 1: Bulk Push ---
+// Measures the O(1) amortized push of FibHeaps vs O(log n) of others.
+
+fn bench_heap_push(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heap_push_sequential");
+
+    group.bench_function("pielist_fibheap_push", |b| {
+        b.iter_batched(
+            || PieFibHeap::<usize, usize>::new(),
+            |mut heap| {
+                for i in 0..HEAP_SIZE {
+                    heap.push(black_box(i), black_box(i));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("extfibheap_push", |b| {
+        b.iter_batched(
+            || ExtFibHeap::new(),
+            |mut heap| {
+                for i in 0..HEAP_SIZE {
+                    heap.insert(black_box(i as i32)).unwrap();
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("binaryheap_push", |b| {
+        b.iter_batched(
+            || BinaryHeap::<(Reverse<usize>, usize)>::new(),
+            |mut heap| {
+                for i in 0..HEAP_SIZE {
+                    // We use Reverse(i) to make the max-heap a min-heap.
+                    heap.push(black_box((Reverse(i), i)));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("priorityqueue_push", |b| {
+        b.iter_batched(
+            || PriorityQueue::<usize, Reverse<usize>>::new(),
+            |mut heap| {
+                for i in 0..HEAP_SIZE {
+                    // We use Reverse(i) to make the max-priority queue a min-priority queue.
+                    // The first `i` is the item's ID, the second is its priority.
+                    heap.push(black_box(i), black_box(Reverse(i)));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
+
+// --- Scenario 2: Full Drain (Pop All) ---
+// Pushes N random items, then measures popping all N items.
+// This heavily tests the `pop` / `consolidate` logic.
+
+fn bench_heap_pop_all(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heap_pop_all_random");
+
+    // Setup: Create a single vec of random numbers to push.
+    let mut rng = StdRng::seed_from_u64(42);
+    let mut random_keys: Vec<usize> = (0..HEAP_SIZE).collect();
+    random_keys.shuffle(&mut rng);
+
+    group.bench_function("pielist_fibheap_pop_all", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = PieFibHeap::new();
+                for &key in &random_keys {
+                    heap.push(key, key);
+                }
+                heap
+            },
+            |mut heap| {
+                for _ in 0..HEAP_SIZE {
+                    black_box(heap.pop().unwrap());
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("extfibheap_pop_all", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = ExtFibHeap::new();
+                for &key in &random_keys {
+                    heap.insert(key as i32).unwrap();
+                }
+                heap
+            },
+            |mut heap| {
+                for _ in 0..HEAP_SIZE {
+                    black_box(heap.extract_min().unwrap());
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("binaryheap_pop_all", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = BinaryHeap::new();
+                for &key in &random_keys {
+                    heap.push((Reverse(key), key));
+                }
+                heap
+            },
+            |mut heap| {
+                for _ in 0..HEAP_SIZE {
+                    black_box(heap.pop().unwrap());
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("priorityqueue_pop_all", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = PriorityQueue::new();
+                for (i, &key) in random_keys.iter().enumerate() {
+                    heap.push(i, Reverse(key)); // Use 'i' as the unique ID
+                }
+                heap
+            },
+            |mut heap| {
+                for _ in 0..HEAP_SIZE {
+                    black_box(heap.pop().unwrap());
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
+// --- Scenario 3: Decrease Key (Dijkstra-like) ---
+// Pushes N items, then repeatedly calls decrease_key on random items.
+// This is the main theoretical advantage of Fibonacci heaps.
+
+fn bench_heap_decrease_key(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heap_decrease_key_random");
+
+    // Setup: Create random indices to update and new (smaller) keys to use.
+    let mut rng = StdRng::seed_from_u64(42);
+    let random_indices: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.random_range(0..HEAP_SIZE)).collect();
+    let random_new_keys: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.random_range(0..HEAP_SIZE)).collect();
+
+    group.bench_function("pielist_fibheap_decrease_key", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = PieFibHeap::new();
+                let mut handles = Vec::with_capacity(HEAP_SIZE);
+                for i in 0..HEAP_SIZE {
+                    handles.push(heap.push(usize::MAX, i));
+                }
+                (heap, handles)
+            },
+            |(mut heap, handles)| {
+                for i in 0..HEAP_SIZE {
+                    let handle = handles[random_indices[i]];
+                    let new_key = random_new_keys[i];
+                    // We black_box the key to ensure the comparison happens.
+                    heap.decrease_key(handle, black_box(new_key));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("priorityqueue_change_priority", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = PriorityQueue::new();
+                for i in 0..HEAP_SIZE {
+                    heap.push(i, Reverse(usize::MAX));
+                }
+                // For PriorityQueue, the "handle" is just the item ID (i).
+                heap
+            },
+            |mut heap| {
+                for i in 0..HEAP_SIZE {
+                    let item_id = &random_indices[i];
+                    let new_key = random_new_keys[i];
+                    heap.change_priority(item_id, black_box(Reverse(new_key)));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("binaryheap_push_workaround", |b| {
+        b.iter_batched(
+            || {
+                let mut heap = BinaryHeap::new();
+                for i in 0..HEAP_SIZE {
+                    heap.push((Reverse(usize::MAX), i));
+                }
+                // The "handles" are just the item IDs (i).
+                heap
+            },
+            |mut heap| {
+                // This isn't a decrease_key, but the common workaround:
+                // just push the new, better-priority item.
+                for i in 0..HEAP_SIZE {
+                    let item_id = random_indices[i];
+                    let new_key = random_new_keys[i];
+                    heap.push(black_box((Reverse(new_key), item_id)));
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
+
 // Group the benchmarks and define the main entry point.
 criterion_group!(
     benches,
+    // PieList benchmarks
     push_back_benchmark,
     iter_benchmark,
     pielist_insert_remove_middle_benchmark,
     index_list_insert_remove_middle_benchmark,
     splice_before_benchmark,
     pielist_sort_benchmark,
+
+    // FibHeap benchmarks
+    bench_heap_push,
+    bench_heap_pop_all,
+    bench_heap_decrease_key,
 );
 criterion_main!(benches);

@@ -93,6 +93,17 @@ impl<K, V> FibHeap<K, V> {
         self.len == 0
     }
 
+    /// Returns the number of nodes the heap can hold without reallocating its internal storage.
+    ///
+    /// This is the capacity of the underlying `pielist::ElemPool`.
+    ///
+    /// # Complexity
+    ///
+    /// O(1)
+    pub fn pool_capacity(&self) -> usize {
+        self.pool.capacity()
+    }
+
     /// Removes all elements from the heap.
     ///
     /// This is an O(n) operation, as it must deallocate all nodes

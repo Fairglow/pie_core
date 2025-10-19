@@ -34,47 +34,64 @@ fn main() {
     println!("   - 'grape'(2) is now a root and the new minimum.");
     println!("   - Its former parent, 'melon'(15), is now marked (M) because it lost a child.");
 
-    // --- DECREASE_KEY (Cascading Cut) ---
-    // The previous examples failed to set this up correctly. This section
-    // is a new, deterministic demonstration of a cascading cut.
-    println!("\n\n--- 5. A Deliberate Cascading Cut Demonstration ---");
-    println!("   To show this reliably, we will start with a fresh heap and build a specific structure.");
+
+    // --- 5. A True Cascading Cut Demonstration ---
+    println!("\n\n--- 5. A True Cascading Cut Demonstration ---");
+    println!("   To see a multi-level cascade, we need a tall tree with specific properties.");
 
     let mut cascade_heap = FibHeap::<i32, &'static str>::new();
 
-    // Step A: Build a tall tree.
-    // By pushing in descending order and popping a smaller value, we force
-    // consolidations that create a chain: 10 -> 20 -> 30 -> 40.
-    println!("\n   Step A: Build a predictable tree structure.");
-    let _h10 = cascade_heap.push(10, "Grandparent");
-    let _h20 = cascade_heap.push(20, "Parent");
-    let h30 = cascade_heap.push(30, "Child 1");
-    let h40 = cascade_heap.push(40, "Child 2");
+    // Step A: Build a guaranteed 4-level tree structure.
+    // We create a chain by pushing 8 nodes and forcing a full consolidation.
+    // The specific chain that forms is GGP(20) -> GP(60) -> P(80) -> C(90).
+    println!("\n   Step A: Build the required tree structure.");
 
-    // Force consolidation
+    // Push 8 nodes. We only need handles for the ones in our target chain and their siblings.
+    let h20 = cascade_heap.push(20, "Great-Grandparent");
+    let _h30 = cascade_heap.push(30, "GGP-Sibling-1");
+    let _h40 = cascade_heap.push(40, "GGP-Sibling-2");
+    let _h50 = cascade_heap.push(50, "P-Sibling");
+    let h60 = cascade_heap.push(60, "Grandparent");
+    let h70 = cascade_heap.push(70, "GP-Sibling");
+    let h80 = cascade_heap.push(80, "Parent");
+    let h90 = cascade_heap.push(90, "Child");
+
+    // Pop a value smaller than all others to force a full consolidation.
     cascade_heap.push(1, "temp");
     cascade_heap.pop();
 
     println!("{cascade_heap}");
-    println!("   Structure is now: Grandparent(10) -> Parent(20) -> (Child 1(30), Child 2(40))");
+    println!("   The structure now contains the 4-level chain we need for our test:");
+    println!("   GGP(20) -> GP(60) -> P(80) -> C(90)");
 
-    // Step B: Mark the Parent.
-    // We cut "Child 1" from "Parent". This marks "Parent".
-    println!("\n   Step B: Cut 'Child 1'(30) to mark its parent.");
-    cascade_heap.decrease_key(h30, 9);
+
+    // Step B: Mark the Grandparent and Parent nodes.
+    // A node is marked when it is not a root and it loses a child.
+    println!("\n   Step B: Mark the 'Grandparent' and 'Parent' nodes.");
+
+    // Cut "GP-Sibling"(70) from "Grandparent"(60). This marks the Grandparent.
+    cascade_heap.decrease_key(h70, 18);
+
+    // Cut "Child"(90) from "Parent"(80). This marks the Parent.
+    cascade_heap.decrease_key(h90, 17);
+
     println!("{cascade_heap}");
-    println!("   - 'Child 1'(9) is now a root.");
-    println!("   - 'Parent'(20) is now marked (M).");
+    println!("   - 'GP-Sibling'(18) and 'Child'(17) are now roots.");
+    println!("   - 'Parent'(80) is marked (M) because it lost its child.");
+    println!("   - 'Grandparent'(60) is also marked (M) for the same reason.");
+
 
     // Step C: Trigger the Cascade.
-    // Now we cut "Child 2" from the already-marked "Parent".
-    // This will cause "Parent" to be cut from "Grandparent", and so on.
-    println!("\n   Step C: Cut 'Child 2'(40) from the MARKED parent.");
-    println!("   This triggers the cascading cut.");
-    cascade_heap.decrease_key(h40, 8);
+    // Now, we cut 'Parent'(80) from 'Grandparent'(60).
+    // Because 'Grandparent'(60) is already marked, the cut will cascade upwards.
+    println!("\n   Step C: Cut 'Parent'(80) from the marked 'Grandparent'(60).");
+    println!("   This triggers the multi-level cascading cut.");
+    cascade_heap.decrease_key(h80, 16);
     println!("{cascade_heap}");
-    println!("   - 'Child 2'(8) is cut and becomes a root.");
-    println!("   - 'Parent'(20) was marked, so it is ALSO cut and becomes a root. Its mark is cleared.");
-    println!("   - 'Grandparent'(10) lost a child ('Parent'), so it is now marked (M).");
+    println!("   - 'Parent'(16) is cut from 'Grandparent' and becomes a root. Its mark is cleared.");
+    println!("   - The cut CASCADES: 'Grandparent'(60) was marked and just lost a child, so it is");
+    println!("     ALSO cut from 'Great-Grandparent'(20). It becomes a new root and its mark is cleared.");
+    println!("   - The cascade stops at 'Great-Grandparent'(20). It lost a child ('Grandparent')");
+    println!("     but is already a root and is therefore not marked (M).");
     println!("\n--- Showcase complete ---");
 }

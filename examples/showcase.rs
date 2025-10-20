@@ -1,4 +1,4 @@
-use pielist::FibHeap;
+use pie_core::FibHeap;
 
 fn main() {
     println!("--- Fibonacci Heap Showcase ---\n");

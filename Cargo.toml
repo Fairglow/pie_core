@@ -1,16 +1,38 @@
 [workspace]
 members = [
-    ".",  # This refers to your main library/binary package at the root
+    ".",
     "examples/bench-table"
 ]
+resolver = "2"
 
 [package]
-name = "pielist"
+name = "pie_core"
 version = "0.2.0"
 edition = "2024"
+license = "MPL-2.0"
+authors = ["Stefan Lindblad <stefan.lindblad@linux.com>"]
+description = """
+A high-performance, index-based data structure toolkit. Provides an arena
+allocator (ElemPool) used to build a cache-friendly PieList
+(doubly-linked list) and FibHeap (priority queue).
+"""
+readme = "README.md"
+repository = "https://github.com/Fairglow/pie_core"
+documentation = "https://docs.rs/pie_core"
+keywords = [
+    "arena",
+    "list",
+    "heap",
+    "priority-queue",
+    "data-structures"
+]
+categories = [
+    "data-structures",
+    "algorithms",
+    "memory-management"
+]
 
 [dependencies]
-rand = "0.9"
 
 [dev-dependencies]
 criterion = "0.7"
@@ -22,3 +44,7 @@ rand = "0.9"
 [[bench]]
 name = "benches"
 harness = false
+
+[profile.release]
+codegen-units = 1
+lto = true

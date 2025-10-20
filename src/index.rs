@@ -83,7 +83,7 @@ impl<T> Index<T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::Index;
+    /// # use pie_core::Index;
     /// let valid_index = Index::<i32>::from(10_u32);
     /// assert!(valid_index.is_some());
     ///
@@ -99,7 +99,7 @@ impl<T> Index<T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::Index;
+    /// # use pie_core::Index;
     /// let invalid_index = Index::<i32>::NONE;
     /// assert!(invalid_index.is_none());
     ///
@@ -146,7 +146,7 @@ impl<T> From<usize> for Index<T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::Index;
+    /// # use pie_core::Index;
     /// let index1 = Index::<char>::from(123_usize);
     /// assert!(index1.is_some());
     ///

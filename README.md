@@ -8,7 +8,7 @@ This crate provides two main types:
 * ElemPool\<T\>: An arena allocator that owns and manages the memory for all list elements of type T.  
 * PieList\<T\>: A lightweight handle representing a single linked list whose elements are stored in a shared ElemPool.
 
-use pielist::{ElemPool, PieList};
+use pie_core::{ElemPool, PieList};
 
 // 1\. Create a shared pool to manage memory for all lists of this type.  
 let mut pool \= ElemPool::\<i32\>::new();

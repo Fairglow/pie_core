@@ -53,7 +53,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -82,7 +82,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -105,7 +105,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -181,7 +181,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -225,7 +225,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -269,7 +269,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -316,7 +316,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
@@ -369,7 +369,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// # Example
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// let mut list1 = PieList::new(&mut pool);
     /// list1.push_back(10, &mut pool).unwrap();

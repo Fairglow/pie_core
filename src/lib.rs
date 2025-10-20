@@ -35,7 +35,7 @@
 //! # Example
 //!
 //! ```
-//! use pielist::{ElemPool, PieList};
+//! use pie_core::{ElemPool, PieList};
 //!
 //! // 1. Create a pool to manage memory for all our lists.
 //! // The pool can only hold one type of data. Here, we choose &'static str.
@@ -76,7 +76,7 @@ mod elem;
 mod index;
 mod list;
 mod pool;
-mod fibheap;
+mod heap;
 
 // --- Public API Re-exports ---
 pub use cursor::CursorMut;
@@ -84,4 +84,4 @@ pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
 pub use pool::{ElemPool, IndexError};
-pub use fibheap::{FibHeap, NodeHandle};
+pub use heap::{FibHeap, FibHandle};

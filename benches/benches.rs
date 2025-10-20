@@ -1,6 +1,6 @@
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
-use pielist::{ElemPool, PieList, FibHeap as PieFibHeap};
+use pie_core::{ElemPool, PieList, FibHeap as PieFibHeap};
 use index_list::IndexList; // Import the crate for comparison
 
 // --- Imports for heap benchmarks ---

@@ -1,4 +1,4 @@
-//! A Fibonacci heap implementation, built on the `pielist` pool.
+//! A Fibonacci heap implementation, built on the `ElemPool` and `PieList`.
 
 use crate::index::Index;
 use crate::list::PieList;
@@ -8,12 +8,12 @@ use std::{fmt, mem};
 /// An opaque struct representing a node within the `FibHeap`.
 ///
 /// Users of the heap cannot interact with this struct directly, but it is
-/// made public to allow the `NodeHandle` type alias to be public as well.
+/// made public to allow the `FibHandle` type alias to be public as well.
 pub struct Node<K, V> {
     key: K,
     value: V,
     /// Handle to this node's parent. `NONE` if this is a root.
-    parent: NodeHandle<K, V>,
+    parent: FibHandle<K, V>,
     /// A handle to this node's list of children.
     children: PieList<Node<K, V>>,
     /// The number of children in the `children` list.
@@ -28,11 +28,11 @@ pub struct Node<K, V> {
 /// This handle is returned by [`FibHeap::push`] and is required for the
 /// [`FibHeap::decrease_key`] operation. The handle remains valid as long
 /// as the node it points to has not been popped from the heap.
-pub type NodeHandle<K, V> = Index<Node<K, V>>;
+pub type FibHandle<K, V> = Index<Node<K, V>>;
 
 /// A Fibonacci heap, designed for efficient priority queue operations.
 ///
-/// This heap is implemented on top of a `pielist::ElemPool`, which avoids
+/// This heap is implemented on top of a `pie_core::ElemPool`, which avoids
 /// per-node allocations and provides high performance. It is a min-heap,
 /// meaning that `pop` will always return the element with the smallest key.
 ///
@@ -46,7 +46,7 @@ pub struct FibHeap<K, V> {
     /// A handle to the doubly-linked list of root nodes.
     roots: PieList<Node<K, V>>,
     /// A handle to the node with the minimum key.
-    min: NodeHandle<K, V>,
+    min: FibHandle<K, V>,
     /// The total number of nodes in the heap.
     len: usize,
 }
@@ -57,7 +57,7 @@ impl<K, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::FibHeap;
+    /// # use pie_core::FibHeap;
     /// let mut heap = FibHeap::<u32, &str>::new();
     /// assert!(heap.is_empty());
     /// ```
@@ -68,7 +68,7 @@ impl<K, V> FibHeap<K, V> {
         Self {
             pool,
             roots,
-            min: NodeHandle::NONE,
+            min: FibHandle::NONE,
             len: 0,
         }
     }
@@ -95,7 +95,7 @@ impl<K, V> FibHeap<K, V> {
 
     /// Returns the number of nodes the heap can hold without reallocating its internal storage.
     ///
-    /// This is the capacity of the underlying `pielist::ElemPool`.
+    /// This is the capacity of the underlying `pie_core::ElemPool`.
     ///
     /// # Complexity
     ///
@@ -114,7 +114,7 @@ impl<K, V> FibHeap<K, V> {
         let mut new_pool = ElemPool::new();
         self.roots = PieList::new(&mut new_pool);
         self.pool = new_pool;
-        self.min = NodeHandle::NONE;
+        self.min = FibHandle::NONE;
         self.len = 0;
     }
 }
@@ -122,7 +122,7 @@ impl<K, V> FibHeap<K, V> {
 impl<K: Ord, V> FibHeap<K, V> {
     /// Pushes a new key-value pair onto the heap.
     ///
-    /// Returns a `pielist::FibNodeHandle` which can be used with `decrease_key`.
+    /// Returns a `pie_core::FibHandle` which can be used with `decrease_key`.
     ///
     /// # Complexity
     ///
@@ -131,19 +131,19 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::FibHeap;
+    /// # use pie_core::FibHeap;
     /// let mut heap = FibHeap::new();
     /// let handle = heap.push(10, "ten");
     /// assert_eq!(heap.len(), 1);
     /// ```
-    pub fn push(&mut self, key: K, value: V) -> NodeHandle<K, V> {
+    pub fn push(&mut self, key: K, value: V) -> FibHandle<K, V> {
         // Each node needs its *own* child list, which means
         // allocating a new sentinel for it.
         let children = PieList::new(&mut self.pool);
         let node = Node {
             key,
             value,
-            parent: NodeHandle::NONE,
+            parent: FibHandle::NONE,
             children,
             degree: 0,
             marked: false,
@@ -163,7 +163,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     }
 
     /// Helper to update the `min` pointer.
-    fn update_min(&mut self, handle: NodeHandle<K, V>) {
+    fn update_min(&mut self, handle: FibHandle<K, V>) {
         if self.min.is_none() {
             self.min = handle;
         } else {
@@ -188,7 +188,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::FibHeap;
+    /// # use pie_core::FibHeap;
     /// let mut heap = FibHeap::new();
     /// heap.push(5, 'a');
     /// heap.push(3, 'b');
@@ -212,7 +212,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::FibHeap;
+    /// # use pie_core::FibHeap;
     /// let mut heap = FibHeap::new();
     /// heap.push(5, 'a');
     /// heap.push(3, 'b');
@@ -252,7 +252,7 @@ impl<K: Ord, V> FibHeap<K, V> {
             // Un-parent all moved children.
             let mut current = first_child;
             for _ in 0..num_children {
-                self.pool.data_mut(current).unwrap().parent = NodeHandle::NONE;
+                self.pool.data_mut(current).unwrap().parent = FibHandle::NONE;
                 current = self.pool.next(current);
             }
         }
@@ -262,7 +262,7 @@ impl<K: Ord, V> FibHeap<K, V> {
 
         // 6. Consolidate the root list.
         if self.roots.is_empty() {
-            self.min = NodeHandle::NONE;
+            self.min = FibHandle::NONE;
         } else {
             self.consolidate();
         }
@@ -272,8 +272,8 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// Consolidates the root list by linking trees of the same degree.
     fn consolidate(&mut self) {
         // Max degree is ~log_phi(n). 64 is safe for n up to 2^64.
-        let mut a: Vec<Option<NodeHandle<K, V>>> = vec![None; 64];
-        self.min = NodeHandle::NONE;
+        let mut a: Vec<Option<FibHandle<K, V>>> = vec![None; 64];
+        self.min = FibHandle::NONE;
 
         let mut handles = Vec::with_capacity(self.roots.len());
         let mut current = self.pool.next(self.roots.sentinel);
@@ -306,7 +306,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     }
 
     /// Links node `y` as a child of node `x`.
-    fn heap_link(&mut self, y: NodeHandle<K, V>, x: NodeHandle<K, V>) {
+    fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
         let mut x_children = self.pool.data_mut(x).unwrap().children;
 
         self.pool.index_link_after(y, x_children.sentinel).unwrap();
@@ -335,7 +335,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// # Examples
     ///
     /// ```
-    /// # use pielist::{FibHeap, NodeHandle};
+    /// # use pie_core::{FibHeap, FibHandle};
     /// let mut heap = FibHeap::new();
     /// heap.push(10, "high priority");
     /// let handle = heap.push(100, "low priority");
@@ -348,7 +348,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// // It is now the minimum element.
     /// assert_eq!(heap.peek().unwrap().0, &5);
     /// ```
-    pub fn decrease_key(&mut self, handle: NodeHandle<K, V>, new_key: K) {
+    pub fn decrease_key(&mut self, handle: FibHandle<K, V>, new_key: K) {
         let parent = {
             let node = self.pool.data(handle).expect("Invalid handle in decrease_key");
             if new_key > node.key {
@@ -368,7 +368,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     }
 
     /// Cuts node `x` from its parent `y`.
-    fn cut(&mut self, x: NodeHandle<K, V>, y: NodeHandle<K, V>) {
+    fn cut(&mut self, x: FibHandle<K, V>, y: FibHandle<K, V>) {
         // 1. Unlink `x` from `y`'s child list.
         self.pool.index_linkout(x).unwrap();
         let mut y_children = self.pool.data_mut(y).unwrap().children;
@@ -381,12 +381,12 @@ impl<K: Ord, V> FibHeap<K, V> {
         self.roots.len += 1;
 
         // 3. Update `x`'s parent and mark.
-        self.pool.data_mut(x).unwrap().parent = NodeHandle::NONE;
+        self.pool.data_mut(x).unwrap().parent = FibHandle::NONE;
         self.pool.data_mut(x).unwrap().marked = false;
     }
 
     /// Performs a cascading cut on node `y`.
-    fn cascading_cut(&mut self, y: NodeHandle<K, V>) {
+    fn cascading_cut(&mut self, y: FibHandle<K, V>) {
         let y_parent = self.pool.data(y).unwrap().parent;
         if y_parent.is_some() {
             if !self.pool.data(y).unwrap().marked {
@@ -449,7 +449,7 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
     /// Recursive helper to format a single node and its descendants.
     fn fmt_node(
         &self,
-        handle: NodeHandle<K, V>,
+        handle: FibHandle<K, V>,
         f: &mut fmt::Formatter<'_>,
         prefix: &str,
         is_last: bool,

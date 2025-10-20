@@ -217,7 +217,7 @@ impl<T> PieList<T> {
     /// # Example
     ///
     /// ```
-    /// # use pielist::{ElemPool, PieList};
+    /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::<i32>::new();
     /// let mut list = PieList::new(&mut pool);
     /// list.push_back(5, &mut pool).unwrap();

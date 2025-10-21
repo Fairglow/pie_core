@@ -151,7 +151,8 @@ impl<K: Ord, V> FibHeap<K, V> {
         // `push_front` creates the `ListElem` in the pool,
         // stores our `node` data inside it, and links it.
         // We panic on OOM, which is standard for collections.
-        self.roots.push_front(node, &mut self.pool)
+        self.roots
+            .push_front(node, &mut self.pool)
             .expect("Failed to allocate node");
 
         // `push_front` adds the node as the *first* element after the sentinel.
@@ -197,7 +198,8 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// ```
     pub fn peek(&self) -> Option<(&K, &V)> {
         // `self.pool.data` safely handles `self.min` being `NONE`.
-        self.pool.data(self.min)
+        self.pool
+            .data(self.min)
             .map(|node| (&node.key, &node.value))
     }
 
@@ -245,8 +247,14 @@ impl<K: Ord, V> FibHeap<K, V> {
             // Splice children into the root list.
             self.pool.get_mut(root_last).unwrap().new_next(first_child);
             self.pool.get_mut(first_child).unwrap().new_prev(root_last);
-            self.pool.get_mut(last_child).unwrap().new_next(self.roots.sentinel);
-            self.pool.get_mut(self.roots.sentinel).unwrap().new_prev(last_child);
+            self.pool
+                .get_mut(last_child)
+                .unwrap()
+                .new_next(self.roots.sentinel);
+            self.pool
+                .get_mut(self.roots.sentinel)
+                .unwrap()
+                .new_prev(last_child);
             self.roots.len += num_children;
 
             // Un-parent all moved children.
@@ -257,7 +265,9 @@ impl<K: Ord, V> FibHeap<K, V> {
             }
         }
         // 5. Return memory to the pool.
-        self.pool.index_del(min_node_data.children.sentinel).unwrap();
+        self.pool
+            .index_del(min_node_data.children.sentinel)
+            .unwrap();
         self.pool.index_del(min_handle).unwrap();
 
         // 6. Consolidate the root list.
@@ -281,7 +291,10 @@ impl<K: Ord, V> FibHeap<K, V> {
             handles.push(current);
             current = self.pool.next(current);
         }
-        self.pool.get_mut(self.roots.sentinel).unwrap().new_links(self.roots.sentinel, self.roots.sentinel);
+        self.pool
+            .get_mut(self.roots.sentinel)
+            .unwrap()
+            .new_links(self.roots.sentinel, self.roots.sentinel);
         self.roots.len = 0;
 
         for &handle in &handles {
@@ -299,7 +312,9 @@ impl<K: Ord, V> FibHeap<K, V> {
             a[d] = Some(x);
         }
         for handle in a.iter().flatten() {
-            self.pool.index_link_after(*handle, self.roots.sentinel).unwrap();
+            self.pool
+                .index_link_after(*handle, self.roots.sentinel)
+                .unwrap();
             self.roots.len += 1;
             self.update_min(*handle);
         }
@@ -309,7 +324,9 @@ impl<K: Ord, V> FibHeap<K, V> {
     fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
         let mut x_children = self.pool.data_mut(x).unwrap().children;
 
-        self.pool.index_link_after(y, x_children.sentinel).unwrap();
+        self.pool
+            .index_link_after(y, x_children.sentinel)
+            .unwrap();
         x_children.len += 1;
         self.pool.data_mut(x).unwrap().children = x_children;
         self.pool.data_mut(x).unwrap().degree += 1;
@@ -350,7 +367,10 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// ```
     pub fn decrease_key(&mut self, handle: FibHandle<K, V>, new_key: K) {
         let parent = {
-            let node = self.pool.data(handle).expect("Invalid handle in decrease_key");
+            let node = self
+                .pool
+                .data(handle)
+                .expect("Invalid handle in decrease_key");
             if new_key > node.key {
                 panic!("new_key is greater than current key");
             }
@@ -377,7 +397,9 @@ impl<K: Ord, V> FibHeap<K, V> {
         self.pool.data_mut(y).unwrap().degree -= 1;
 
         // 2. Add `x` to the root list.
-        self.pool.index_link_after(x, self.roots.sentinel).unwrap();
+        self.pool
+            .index_link_after(x, self.roots.sentinel)
+            .unwrap();
         self.roots.len += 1;
 
         // 3. Update `x`'s parent and mark.
@@ -398,6 +420,41 @@ impl<K: Ord, V> FibHeap<K, V> {
                 self.cascading_cut(y_parent);
             }
         }
+    }
+
+    /// Creates a draining iterator that removes all elements from the heap in
+    /// ascending order of their keys and yields their (key, value) pairs.
+    ///
+    /// The heap will be empty after the iterator has been fully consumed.
+    ///
+    /// # Note
+    ///
+    /// If the iterator is dropped before it is fully consumed, it will not
+    /// remove the remaining elements. The heap will be left partially drained.
+    /// This is because, unlike `PieList::drain`, each call to `next()` is an
+    /// O(log n) operation, and automatically clearing the remainder on drop
+    /// could be an unexpectedly expensive operation.
+    ///
+    /// # Complexity
+    /// Each call to `next()` on the iterator has the same complexity as
+    /// [`pop()`]: O(log n) amortized time. Consuming the entire iterator
+    /// is equivalent to sorting the elements, taking O(n log n) time.
+    ///
+    /// # Example
+    /// ```
+    /// # use pie_core::FibHeap;
+    /// let mut heap = FibHeap::new();
+    /// heap.push(10, "ten");
+    /// heap.push(5, "five");
+    /// heap.push(20, "twenty");
+    ///
+    /// let drained_items: Vec<_> = heap.drain().collect();
+    /// assert_eq!(drained_items, vec![(5, "five"), (10, "ten"), (20, "twenty")]);
+    /// assert!(heap.is_empty());
+    /// ```
+    /// [`pop()`]: FibHeap::pop
+    pub fn drain(&mut self) -> Drain<'_, K, V> {
+        Drain { heap: self }
     }
 }
 
@@ -426,7 +483,9 @@ impl<K: Ord + fmt::Display, V: fmt::Display> fmt::Display for FibHeap<K, V> {
             f,
             "FibHeap (len: {}, min: {})",
             self.len,
-            self.pool.data(self.min).map_or_else(|| "N/A".to_string(), |n| n.key.to_string())
+            self.pool
+                .data(self.min)
+                .map_or_else(|| "N/A".to_string(), |n| n.key.to_string())
         )?;
         let mut current = self.pool.next(self.roots.sentinel);
         if current == self.roots.sentinel {
@@ -484,6 +543,23 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
     }
 }
 
+/// A draining iterator for a `FibHeap`.
+///
+/// This struct is created by the [`drain()`] method on [`FibHeap`].
+/// See its documentation for more.
+///
+/// [`drain()`]: FibHeap::drain
+pub struct Drain<'a, K: Ord, V> {
+    heap: &'a mut FibHeap<K, V>,
+}
+
+impl<'a, K: Ord, V> Iterator for Drain<'a, K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.heap.pop()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -612,7 +688,9 @@ mod tests {
 
         // Get handle for node 20, which is now a child of 10.
         // This relies on knowing the consolidation structure, but is safe here.
-        let handle_20 = heap.pool.next(heap.pool.data(heap.min).unwrap().children.sentinel);
+        let handle_20 = heap
+            .pool
+            .next(heap.pool.data(heap.min).unwrap().children.sentinel);
         assert_eq!(heap.pool.data(handle_20).unwrap().key, 20);
 
         // Decrease key of 20 to 8. This violates heap property.
@@ -649,41 +727,71 @@ mod tests {
         let h10 = heap.push(10, "GP"); // This is the Grandparent
         heap.push(9, "min");
         heap.pop(); // Pops 9. Consolidates h10(d=0), h20(d=0), h30(d=1).
-        // This creates the final tree shown in log #6:
-        // h10(d=2) -> (h20, (h30 -> h40))
+                    // This creates the final tree shown in log #6:
+                    // h10(d=2) -> (h20, (h30 -> h40))
         println!("#3: {heap}");
 
         // --- Test the cascading cut logic ---
 
         // 1. Assert the structure is GP(h10) -> P(h30) -> C(h40)
-        assert_eq!(heap.pool.data(h30).unwrap().parent, h10, "P(h30) should be child of GP(h10)");
-        assert_eq!(heap.pool.data(h40).unwrap().parent, h30, "C(h40) should be child of P(h30)");
+        assert_eq!(
+            heap.pool.data(h30).unwrap().parent,
+            h10,
+            "P(h30) should be child of GP(h10)"
+        );
+        assert_eq!(
+            heap.pool.data(h40).unwrap().parent,
+            h30,
+            "C(h40) should be child of P(h30)"
+        );
 
         // 2. Cut C (h40) from P (h30). This must MARK P (h30).
         heap.decrease_key(h40, 5); // New key is 5.
         println!("#4: {heap}"); // h40 is now a root
 
         // Verify C (h40) is now a root.
-        assert!(heap.pool.data(h40).unwrap().parent.is_none(), "h40 should be a root after cut");
+        assert!(
+            heap.pool.data(h40).unwrap().parent.is_none(),
+            "h40 should be a root after cut"
+        );
         // Verify P (h30) is marked (it's not a root and lost a child).
-        assert!(heap.pool.data(h30).unwrap().marked, "h30 should be marked after losing one child");
+        assert!(
+            heap.pool.data(h30).unwrap().marked,
+            "h30 should be marked after losing one child"
+        );
         // Verify GP (h10) is NOT marked (it's the root).
-        assert!(!heap.pool.data(h10).unwrap().marked, "h10 should not be marked");
+        assert!(
+            !heap.pool.data(h10).unwrap().marked,
+            "h10 should not be marked"
+        );
 
         // 3. Now, cut P (h30) from GP (h10). This must trigger a CASCADING CUT.
         heap.decrease_key(h30, 6); // New key is 6.
         println!("#5: {heap}"); // h30 is now a root
 
         // Verify P (h30) is now a root.
-        assert!(heap.pool.data(h30).unwrap().parent.is_none(), "h30 should be a root after cascading cut");
+        assert!(
+            heap.pool.data(h30).unwrap().parent.is_none(),
+            "h30 should be a root after cascading cut"
+        );
         // Verify P's mark was reset to false because it became a root.
-        assert!(!heap.pool.data(h30).unwrap().marked, "h30's mark should be reset");
+        assert!(
+            !heap.pool.data(h30).unwrap().marked,
+            "h30's mark should be reset"
+        );
 
         // Verify GP (h10) was *not* cut (it's root) but *was* checked by cascading_cut.
         // Since h10 is root, its parent is NONE, so cascading_cut(h10) does nothing.
-        assert!(heap.pool.data(h10).unwrap().parent.is_none(), "h10 should still be a root");
+        assert!(
+            heap.pool.data(h10).unwrap().parent.is_none(),
+            "h10 should still be a root"
+        );
         // We can also check h20, which should be untouched.
-        assert_eq!(heap.pool.data(h20).unwrap().parent, h10, "h20 should still be a child of h10");
+        assert_eq!(
+            heap.pool.data(h20).unwrap().parent,
+            h10,
+            "h20 should still be a child of h10"
+        );
     }
 
     #[test]
@@ -692,5 +800,28 @@ mod tests {
         let mut heap = FibHeap::new();
         let handle = heap.push(10, ());
         heap.decrease_key(handle, 20); // Panics because 20 > 10
+    }
+
+    #[test]
+    fn test_drain() {
+        let mut heap = FibHeap::new();
+        heap.push(20, 'd');
+        heap.push(5, 'a');
+        heap.push(15, 'c');
+        heap.push(10, 'b');
+
+        assert_eq!(heap.len(), 4);
+
+        let mut drain = heap.drain();
+        assert_eq!(drain.next(), Some((5, 'a')));
+        assert_eq!(drain.next(), Some((10, 'b')));
+        // After two pops, the heap is still valid but smaller.
+        let rest: Vec<_> = drain.collect();
+        assert_eq!(rest, vec![(15, 'c'), (20, 'd')]);
+
+        // The original heap should now be empty.
+        assert!(heap.is_empty());
+        assert_eq!(heap.len(), 0);
+        assert_eq!(heap.pop(), None);
     }
 }

@@ -24,11 +24,13 @@ use std::marker::PhantomData;
 /// returned to the pool. This is a deliberate design choice to allow lists to be
 /// moved and managed without unintended side effects on the pool.
 ///
-/// To prevent memory leaks within the pool, you **must** call [`clear()`] on a list
-/// when you are finished with it. This will iterate through all its elements and
-/// return them to the pool's free list, making them available for reuse.
+/// To prevent memory leaks within the pool, you **must** call [`clear()`] or
+/// [`drain()`] on a list when you are finished with it. This will iterate through
+/// all its elements and return them to the pool's free list, making them
+/// available for reuse.
 ///
 /// [`clear()`]: PieList::clear
+/// [`drain()`]: PieList::drain
 #[derive(Debug)]
 pub struct PieList<T> {
     /// The index of the sentinel node for this list. The sentinel's `next`
@@ -207,6 +209,57 @@ impl<T> PieList<T> {
         while self.pop_front(pool).is_some() {}
     }
 
+    /// Creates a draining iterator that removes all elements from the list and
+    /// yields them from front to back.
+    ///
+    /// The removed nodes are returned to the pool's free list.
+    ///
+    /// # Note
+    ///
+    /// If the iterator is dropped before it is fully consumed, it will still
+    /// remove the remaining elements from the list to ensure that the list is
+    /// left empty.
+    ///
+    /// # Complexity
+    /// O(n), where n is the number of elements in the list. Each element is
+    /// visited once.
+    ///
+    /// # Example
+    /// ```
+    /// # use pie_core::{ElemPool, PieList};
+    /// # let mut pool = ElemPool::<i32>::new();
+    /// let mut list = PieList::new(&mut pool);
+    /// list.push_back(1, &mut pool).unwrap();
+    /// list.push_back(2, &mut pool).unwrap();
+    /// list.push_back(3, &mut pool).unwrap();
+    ///
+    /// let drained_items: Vec<_> = list.drain(&mut pool).collect();
+    ///
+    /// assert_eq!(drained_items, vec![1, 2, 3]);
+    /// assert!(list.is_empty());
+    /// assert_eq!(pool.len(), 0); // All elements returned to pool
+    /// ```
+    pub fn drain<'a>(&'a mut self, pool: &'a mut ElemPool<T>) -> Drain<'a, T> {
+        let front = pool.next(self.sentinel);
+        let back = pool.prev(self.sentinel);
+        let len = self.len;
+
+        // Immediately clear the list's own state. The Drain iterator now owns
+        // the responsibility of cleaning up the nodes.
+        pool.get_mut(self.sentinel)
+            .unwrap()
+            .new_links(self.sentinel, self.sentinel);
+        self.len = 0;
+
+        Drain {
+            pool,
+            front,
+            back,
+            len,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Sorts the list in place using a stable merge sort algorithm.
     ///
     /// # Complexity
@@ -232,7 +285,9 @@ impl<T> PieList<T> {
     /// assert_eq!(sorted, vec![1, 2, 5, 8]);
     /// ```
     pub fn sort<F>(&mut self, pool: &mut ElemPool<T>, mut compare: F)
-    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
         // This public method is a wrapper that calls the recursive helper.
         // It allows the user to pass the closure by value, which is ergonomic.
         self.sort_recursive(pool, &mut compare);
@@ -240,7 +295,9 @@ impl<T> PieList<T> {
 
     /// The internal recursive implementation of merge sort.
     fn sort_recursive<F>(&mut self, pool: &mut ElemPool<T>, compare: &mut F)
-    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
         // A list of 0 or 1 elements is already sorted.
         if self.len() < 2 {
             return;
@@ -268,7 +325,9 @@ impl<T> PieList<T> {
     /// and `other` is the second. After the operation, `self` will contain
     /// all elements from both lists in sorted order, and `other` will be empty.
     fn merge<F>(&mut self, mut other: PieList<T>, pool: &mut ElemPool<T>, compare: &mut F)
-    where F: FnMut(&T, &T) -> std::cmp::Ordering {
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
         // If the other list is empty, there's nothing to do.
         if other.is_empty() {
             return;
@@ -294,7 +353,8 @@ impl<T> PieList<T> {
                 pool.index_linkout(node_to_move).unwrap();
                 other.len -= 1;
                 // Link it into `self` right before the current node.
-                pool.index_link_before(node_to_move, current_self_node).unwrap();
+                pool.index_link_before(node_to_move, current_self_node)
+                    .unwrap();
                 self.len += 1;
             } else {
                 // The `self` node is smaller, so it's in the correct place.
@@ -514,6 +574,66 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
     }
 }
 
+/// A draining iterator for a `PieList`.
+///
+/// This struct is created by the [`drain()`] method on [`PieList`].
+/// See its documentation for more.
+///
+/// [`drain()`]: PieList::drain
+pub struct Drain<'a, T: 'a> {
+    pool: &'a mut ElemPool<T>,
+    front: Index<T>,
+    back: Index<T>,
+    len: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<'a, T> Iterator for Drain<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let current_idx = self.front;
+        self.front = self.pool.next(current_idx);
+        self.len -= 1;
+
+        // The drain constructor already unlinked the entire chain of nodes from
+        // the list's sentinel, so we don't need to `index_linkout` here. We
+        // just need to consume the chain and deallocate the nodes.
+        let data = self.pool.data_swap(current_idx, None);
+        self.pool.index_del(current_idx).unwrap();
+
+        data
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let current_idx = self.back;
+        self.back = self.pool.prev(current_idx);
+        self.len -= 1;
+
+        let data = self.pool.data_swap(current_idx, None);
+        self.pool.index_del(current_idx).unwrap();
+
+        data
+    }
+}
+
+impl<'a, T> Drop for Drain<'a, T> {
+    fn drop(&mut self) {
+        // Drain any remaining elements to prevent leaking them in the pool.
+        for _ in self {}
+    }
+}
+
 // --- Test Suite for PieList ---
 
 #[cfg(test)]
@@ -625,6 +745,53 @@ mod tests {
     }
 
     #[test]
+    fn test_drain() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back(1, &mut pool).unwrap();
+        list.push_back(2, &mut pool).unwrap();
+        list.push_back(3, &mut pool).unwrap();
+
+        assert_eq!(list.len(), 3);
+        assert_eq!(pool.len(), 3);
+
+        {
+            let mut drain = list.drain(&mut pool);
+            assert_eq!(drain.next(), Some(1));
+            assert_eq!(drain.next_back(), Some(3));
+            assert_eq!(drain.next(), Some(2));
+            assert_eq!(drain.next(), None);
+            assert_eq!(drain.next_back(), None);
+        } // drain is dropped here
+
+        assert!(list.is_empty());
+        assert_eq!(pool.len(), 0); // Elements were freed
+    }
+
+    #[test]
+    fn test_drain_drop() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back(10, &mut pool).unwrap();
+        list.push_back(20, &mut pool).unwrap();
+        list.push_back(30, &mut pool).unwrap();
+        list.push_back(40, &mut pool).unwrap();
+
+        {
+            let mut drain = list.drain(&mut pool);
+            // Only take one element
+            assert_eq!(drain.next(), Some(10));
+            // Drop the drain iterator without consuming the rest.
+        }
+
+        // The Drop impl should have cleared the rest.
+        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
+        // Pool should be empty as well.
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
     fn test_multiple_lists_in_one_pool() {
         let mut pool = ElemPool::new();
         let mut list1 = PieList::new(&mut pool);
@@ -698,7 +865,10 @@ mod tests {
     #[test]
     fn test_sort_stability() {
         #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-        struct Item { key: i32, val: char }
+        struct Item {
+            key: i32,
+            val: char,
+        }
         let mut pool = ElemPool::new();
         let mut list = PieList::new(&mut pool);
 
@@ -712,9 +882,15 @@ mod tests {
         list.sort(&mut pool, |a, b| a.key.cmp(&b.key));
 
         let sorted: Vec<_> = list.iter(&pool).copied().collect();
-        assert_eq!(sorted, vec![
-            Item { key: 0, val: 'd' }, Item { key: 1, val: 'b' }, Item { key: 1, val: 'e' }, // 'b' before 'e'
-            Item { key: 2, val: 'a' }, Item { key: 2, val: 'c' }, // 'a' before 'c'
-        ]);
+        assert_eq!(
+            sorted,
+            vec![
+                Item { key: 0, val: 'd' },
+                Item { key: 1, val: 'b' },
+                Item { key: 1, val: 'e' }, // 'b' before 'e'
+                Item { key: 2, val: 'a' },
+                Item { key: 2, val: 'c' }, // 'a' before 'c'
+            ]
+        );
     }
 }

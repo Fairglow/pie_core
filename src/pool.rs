@@ -121,6 +121,12 @@ impl<T> ElemPool<T> {
         self.elems.len() - 1
     }
 
+    /// Returns the number of free elements in the pool.
+    #[inline]
+    pub fn free_len(&self) -> usize {
+        self.freed
+    }
+
     /// Returns the number of active lists associated with this pool.
     ///
     /// This is calculated by subtracting the number of data-holding elements and

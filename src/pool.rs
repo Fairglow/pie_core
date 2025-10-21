@@ -39,21 +39,21 @@ impl fmt::Display for IndexError {
     }
 }
 
-/// A pool of `ListElem<T>` nodes that provides memory for multiple `PieList` instances.
+/// A pool of `ListElem<T>` nodes that provides memory for multiple data structures.
 ///
 /// # Rationale
 ///
 /// The `ElemPool` is the cornerstone of this library's design. It acts as a
 /// specialized memory allocator. By pre-allocating memory in a `Vec` and managing
 /// its own free list, it avoids the performance cost of frequent calls to the
-/// global allocator. This makes creating and destroying list elements extremely fast.
+/// global allocator. This makes creating and destroying elements extremely fast.
 ///
-/// All list elements, regardless of which `PieList` they belong to, are stored
-/// contiguously within this single structure, leading to better cache locality
-/// during list traversals compared to traditional node-based linked lists.
+/// All list elements, regardless of which `PieList` or `FibHeap` they belong to,
+/// are stored contiguously within this single structure, leading to better cache
+/// locality during traversals compared to traditional node-based linked lists.
 ///
-/// Its public API is minimal, as most interactions are performed through `PieList`
-/// and `CursorMut` methods, which take the pool as an argument.
+/// Its public API is minimal, as most interactions are performed through `PieList`,
+/// `CursorMut`, or `FibHeap` methods, which take the pool as an argument.
 #[derive(Clone, Debug)]
 pub struct ElemPool<T> {
     /// The contiguous storage for all list elements (nodes).

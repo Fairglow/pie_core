@@ -1,36 +1,39 @@
-//! A high-performance, index-based linked list optimized for embedded data.
+//! A high-performance, index-based data structure toolkit.
 //!
-//! `pielist` provides a doubly-linked list implementation that stores all its
-//! elements in a central, contiguous `ElemPool`. This design offers several
-
-//! key advantages over traditional pointer-based lists like `std::collections::LinkedList`:
+//! `pie_core` (formerly `pielist`) provides data structures built on a central,
+//! contiguous `ElemPool`. This design offers several key advantages over
+//! traditional pointer-based collections:
 //!
 //! - **Cache-Friendly:** By storing nodes in a `Vec`, traversals are significantly
 //!   faster due to improved data locality.
 //! - **No Alloc/Dealloc Churn:** The pool manages memory, reusing freed nodes.
 //!   This eliminates the overhead of frequent calls to the system allocator, making
 //!   insertions and removals very fast.
-//! - **Multi-List Support:** A single `ElemPool` can manage the memory for many
-//!   separate `PieList` instances, making it ideal for scenarios where you need
-//!   to manage numerous small lists, such as in game development or graph algorithms.
+//! - **Multi-Structure Support:** A single `ElemPool` can manage the memory for many
+//!   separate `PieList` and `FibHeap` instances, making it ideal for managing
+//!   numerous small data structures efficiently.
 //! - **Safe Cursors:** The library provides a `CursorMut` API for complex, efficient
-//!   in-place mutations like splitting and splicing lists, all while upholding
-//!   Rust's borrow-checking rules.
+//!   in-place list mutations like splitting and splicing.
+//! - **Efficient Priority Queue:** Includes a `FibHeap` implementation with O(1)
+//!   amortized `decrease_key`, ideal for graph algorithms.
 //!
-//! This crate is a "PieList" because it stores the data (`T`) *directly inside* the
-//! list element structure, which is efficient for smaller `T`. This avoids an extra
-//! layer of indirection compared to designs that store pointers to data.
+//! This crate is a "Pie" library because it stores the data (`T`) *directly inside* the
+//! element structure, which is efficient for smaller `T`. This avoids an extra
+//! layer of indirection.
 //!
 //! # Core Concepts
 //!
-//! - [`ElemPool`]: The memory arena that owns all list elements. All operations on a
-//!   list require a mutable reference to the pool.
+//! - [`ElemPool`]: The memory arena that owns all elements. All operations on a
+//!   structure require a reference to the pool.
 //! - [`PieList<T>`]: A lightweight handle representing a single doubly-linked list.
-//!   It doesn't own the elements itself, but references them within the pool.
+//! - [`FibHeap<K, V>`]: A Fibonacci heap (priority queue) optimized for
+//!   fast `decrease_key` operations.
 //! - [`Index<T>`]: A type-safe, copyable handle to a specific element within the pool.
 //!   It acts as a "safe pointer".
-//! - [`CursorMut<'a, T>`]: A mutable cursor that provides an efficient way to navigate
-//!   and modify a list at a specific position.
+//! - [`CursorMut<'a, T>`]: A mutable cursor for efficient `PieList` navigation
+//!   and modification.
+//! - [`NodeHandle<K, V>`]: A type-safe handle to a node in a `FibHeap`,
+//!   required for `decrease_key`.
 //!
 //! # Example
 //!
@@ -49,7 +52,6 @@
 //! list_a.push_back("Apple", &mut pool).unwrap();
 //! list_a.push_back("Banana", &mut pool).unwrap();
 //!
-//! // list_b must also use strings, as that is the pool's type.
 //! list_b.push_front("Cat", &mut pool).unwrap();
 //! list_b.push_front("Dog", &mut pool).unwrap();
 //!

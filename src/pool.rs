@@ -137,6 +137,24 @@ impl<T> ElemPool<T> {
         self.capacity() - self.used - self.freed
     }
 
+    /// Reserves capacity for at least `additional` more elements to be
+    /// allocated in the pool.
+    ///
+    /// The pool's underlying storage may reallocate if its capacity is
+    /// less than the current length plus `additional`. If the capacity is
+    /// already sufficient, this does nothing.
+    ///
+    /// This is useful to avoid multiple reallocations when a large number
+    /// of elements are expected to be added.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new capacity overflows `isize::MAX`.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.elems.reserve(additional);
+    }
+
     /// Checks if a given index points to an element that contains user data.
     ///
     /// Returns `false` if the index is `NONE`, out of bounds, or points to a

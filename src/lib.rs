@@ -86,4 +86,4 @@ pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
 pub use pool::{ElemPool, IndexError};
-pub use heap::{FibHeap, FibHandle};
+pub use heap::{FibHeap, FibHandle, DecreaseKeyError};

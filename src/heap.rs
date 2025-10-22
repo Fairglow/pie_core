@@ -5,6 +5,23 @@ use crate::list::PieList;
 use crate::pool::ElemPool;
 use std::{fmt, mem};
 
+/// An error returned from `FibHeap::decrease_key`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecreaseKeyError {
+    /// The provided handle was invalid (e.g., NONE, out of bounds, or pointed to a free node).
+    InvalidHandle,
+}
+
+impl std::error::Error for DecreaseKeyError {}
+
+impl fmt::Display for DecreaseKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidHandle => write!(f, "Invalid handle provided to decrease_key"),
+        }
+    }
+}
+
 /// An opaque struct representing a node within the `FibHeap`.
 ///
 /// Users of the heap cannot interact with this struct directly, but it is
@@ -65,12 +82,7 @@ impl<K, V> FibHeap<K, V> {
         let mut pool = ElemPool::new();
         // The root list needs its own sentinel, allocated from the pool.
         let roots = PieList::new(&mut pool);
-        Self {
-            pool,
-            roots,
-            min: FibHandle::NONE,
-            len: 0,
-        }
+        Self { pool, roots, min: FibHandle::NONE, len: 0, }
     }
 
     /// Returns the number of elements in the heap.
@@ -159,10 +171,8 @@ impl<K: Ord, V> FibHeap<K, V> {
         self.roots
             .push_front(node, &mut self.pool)
             .expect("Failed to allocate node");
-
         // `push_front` adds the node as the *first* element after the sentinel.
         let handle = self.pool.next(self.roots.sentinel);
-
         self.update_min(handle);
         self.len += 1;
         handle
@@ -203,9 +213,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// ```
     pub fn peek(&self) -> Option<(&K, &V)> {
         // `self.pool.data` safely handles `self.min` being `NONE`.
-        self.pool
-            .data(self.min)
-            .map(|node| (&node.key, &node.value))
+        self.pool.data(self.min).map(|node| (&node.key, &node.value))
     }
 
     /// Removes and returns the element with the smallest key (highest priority).
@@ -233,35 +241,24 @@ impl<K: Ord, V> FibHeap<K, V> {
             return None;
         }
         let min_handle = self.min;
-
         // 1. Unlink the min node from the root list.
         self.pool.index_linkout(min_handle).unwrap();
         self.roots.len -= 1;
-
         // 2. Take the node data out of the pool.
         let min_node_data = self.pool.data_swap(min_handle, None).unwrap();
         self.len -= 1;
-
         // 3. Move the min node's children to the root list.
         let num_children = min_node_data.children.len;
         if num_children > 0 {
             let first_child = self.pool.next(min_node_data.children.sentinel);
             let last_child = self.pool.prev(min_node_data.children.sentinel);
             let root_last = self.pool.prev(self.roots.sentinel);
-
             // Splice children into the root list.
             self.pool.get_mut(root_last).unwrap().new_next(first_child);
             self.pool.get_mut(first_child).unwrap().new_prev(root_last);
-            self.pool
-                .get_mut(last_child)
-                .unwrap()
-                .new_next(self.roots.sentinel);
-            self.pool
-                .get_mut(self.roots.sentinel)
-                .unwrap()
-                .new_prev(last_child);
+            self.pool.get_mut(last_child).unwrap().new_next(self.roots.sentinel);
+            self.pool.get_mut(self.roots.sentinel).unwrap().new_prev(last_child);
             self.roots.len += num_children;
-
             // Un-parent all moved children.
             let mut current = first_child;
             for _ in 0..num_children {
@@ -274,7 +271,6 @@ impl<K: Ord, V> FibHeap<K, V> {
             .index_del(min_node_data.children.sentinel)
             .unwrap();
         self.pool.index_del(min_handle).unwrap();
-
         // 6. Consolidate the root list.
         if self.roots.is_empty() {
             self.min = FibHandle::NONE;
@@ -289,23 +285,18 @@ impl<K: Ord, V> FibHeap<K, V> {
         // Max degree is ~log_phi(n). 64 is safe for n up to 2^64.
         let mut a: Vec<Option<FibHandle<K, V>>> = vec![None; 64];
         self.min = FibHandle::NONE;
-
         let mut handles = Vec::with_capacity(self.roots.len());
         let mut current = self.pool.next(self.roots.sentinel);
         while current != self.roots.sentinel {
             handles.push(current);
             current = self.pool.next(current);
         }
-        self.pool
-            .get_mut(self.roots.sentinel)
-            .unwrap()
+        self.pool.get_mut(self.roots.sentinel).unwrap()
             .new_links(self.roots.sentinel, self.roots.sentinel);
         self.roots.len = 0;
-
         for &handle in &handles {
             let mut x = handle;
             let mut d = self.pool.data(x).unwrap().degree;
-
             while let Some(mut y) = a[d] {
                 if self.pool.data(x).unwrap().key > self.pool.data(y).unwrap().key {
                     mem::swap(&mut x, &mut y);
@@ -317,9 +308,7 @@ impl<K: Ord, V> FibHeap<K, V> {
             a[d] = Some(x);
         }
         for handle in a.iter().flatten() {
-            self.pool
-                .index_link_after(*handle, self.roots.sentinel)
-                .unwrap();
+            self.pool.index_link_after(*handle, self.roots.sentinel).unwrap();
             self.roots.len += 1;
             self.update_min(*handle);
         }
@@ -328,10 +317,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// Links node `y` as a child of node `x`.
     fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
         let mut x_children = self.pool.data_mut(x).unwrap().children;
-
-        self.pool
-            .index_link_after(y, x_children.sentinel)
-            .unwrap();
+        self.pool.index_link_after(y, x_children.sentinel).unwrap();
         x_children.len += 1;
         self.pool.data_mut(x).unwrap().children = x_children;
         self.pool.data_mut(x).unwrap().degree += 1;
@@ -370,18 +356,18 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// // It is now the minimum element.
     /// assert_eq!(heap.peek().unwrap().0, &5);
     /// ```
-    pub fn decrease_key(&mut self, handle: FibHandle<K, V>, new_key: K) {
+    pub fn decrease_key(&mut self, handle: FibHandle<K, V>, new_key: K
+    ) -> Result<(), DecreaseKeyError> {
         let parent = {
-            let node = self
-                .pool
-                .data(handle)
-                .expect("Invalid handle in decrease_key");
+            let node = self.pool.data(handle).ok_or(DecreaseKeyError::InvalidHandle)?;
             if new_key > node.key {
+                // We *keep* this panic. It's a logical contract violation.
                 panic!("new_key is greater than current key");
             }
             node.parent
         };
         {
+            // This unwrap is now 100% safe because of the check above.
             let node_mut = self.pool.data_mut(handle).unwrap();
             node_mut.key = new_key;
         }
@@ -390,6 +376,7 @@ impl<K: Ord, V> FibHeap<K, V> {
             self.cascading_cut(parent);
         }
         self.update_min(handle);
+        Ok(())
     }
 
     /// Cuts node `x` from its parent `y`.
@@ -400,13 +387,9 @@ impl<K: Ord, V> FibHeap<K, V> {
         y_children.len -= 1;
         self.pool.data_mut(y).unwrap().children = y_children;
         self.pool.data_mut(y).unwrap().degree -= 1;
-
         // 2. Add `x` to the root list.
-        self.pool
-            .index_link_after(x, self.roots.sentinel)
-            .unwrap();
+        self.pool.index_link_after(x, self.roots.sentinel).unwrap();
         self.roots.len += 1;
-
         // 3. Update `x`'s parent and mark.
         self.pool.data_mut(x).unwrap().parent = FibHandle::NONE;
         self.pool.data_mut(x).unwrap().marked = false;
@@ -484,14 +467,10 @@ impl<K: Ord + fmt::Display, V: fmt::Display> fmt::Display for FibHeap<K, V> {
         if self.is_empty() {
             return writeln!(f, "FibHeap (empty)");
         }
-        writeln!(
-            f,
-            "FibHeap (len: {}, min: {})",
+        writeln!(f, "FibHeap (len: {}, min: {})",
             self.len,
-            self.pool
-                .data(self.min)
-                .map_or_else(|| "N/A".to_string(), |n| n.key.to_string())
-        )?;
+            self.pool.data(self.min)
+                .map_or_else(|| "N/A".to_string(), |n| n.key.to_string()))?;
         let mut current = self.pool.next(self.roots.sentinel);
         if current == self.roots.sentinel {
             return writeln!(f, "  <no roots>");
@@ -521,18 +500,13 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
         // This unwrap is safe within this context, as we only ever call this
         // with valid handles from traversing the heap structure.
         let node = self.pool.data(handle).unwrap();
-
         // Print the current node's line
         let connector = if is_last { "└─" } else { "├─" };
         let marked_str = if node.marked { " (M)" } else { "" };
-        writeln!(
-            f,
-            "{}{} Node(k: {}, v: {}){}",
-            prefix, connector, node.key, node.value, marked_str
-        )?;
+        writeln!(f, "{}{} Node(k: {}, v: {}){}",
+            prefix, connector, node.key, node.value, marked_str)?;
         // Prepare the prefix for children
         let child_prefix = format!("{}{}", prefix, if is_last { "   " } else { "│  " });
-
         // Recursively print children
         let children_list = node.children;
         if !children_list.is_empty() {

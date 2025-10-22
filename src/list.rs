@@ -422,6 +422,46 @@ impl<T> PieList<T> {
         Ok(())
     }
 
+    /// Moves all elements from `other` to the end of `self`.
+    ///
+    /// After the operation, `other` is left empty.
+    ///
+    /// # Complexity
+    /// O(1)
+    ///
+    /// # Errors
+    /// Returns an `IndexError` if the pool's internal linking fails,
+    /// though this is highly unlikely if the lists are valid.
+    pub fn append(
+        &mut self,
+        other: &mut PieList<T>,
+        pool: &mut ElemPool<T>,
+    ) -> Result<(), IndexError> {
+        // Splice the 'other' list in just before 'self's sentinel node.
+        self.splice(self.sentinel, other, pool)
+    }
+
+    /// Moves all elements from `other` to the beginning of `self`.
+    ///
+    /// After the operation, `other` is left empty.
+    ///
+    /// # Complexity
+    /// O(1)
+    ///
+    /// # Errors
+    /// Returns an `IndexError` if the pool's internal linking fails,
+    /// though this is highly unlikely if the lists are valid.
+    pub fn prepend(
+        &mut self,
+        other: &mut PieList<T>,
+        pool: &mut ElemPool<T>,
+    ) -> Result<(), IndexError> {
+        // Find the first element of 'self'
+        let first_elem = pool.next(self.sentinel);
+        // Splice the 'other' list in just before 'self's first element.
+        self.splice(first_elem, other, pool)
+    }
+
     /// Returns an iterator that provides immutable references to the elements
     /// from front to back.
     pub fn iter<'a>(&self, pool: &'a ElemPool<T>) -> Iter<'a, T> {

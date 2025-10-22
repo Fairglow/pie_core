@@ -32,7 +32,7 @@
 //!   It acts as a "safe pointer".
 //! - [`CursorMut<'a, T>`]: A mutable cursor for efficient `PieList` navigation
 //!   and modification.
-//! - [`NodeHandle<K, V>`]: A type-safe handle to a node in a `FibHeap`,
+//! - [`FibHandle<K, V>`]: A type-safe handle to a node in a `FibHeap`,
 //!   required for `decrease_key`.
 //!
 //! # Example

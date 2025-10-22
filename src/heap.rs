@@ -136,6 +136,11 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// let handle = heap.push(10, "ten");
     /// assert_eq!(heap.len(), 1);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `ElemPool` fails to allocate a new node, which
+    /// typically only happens in an out-of-memory situation.
     pub fn push(&mut self, key: K, value: V) -> FibHandle<K, V> {
         // Each node needs its *own* child list, which means
         // allocating a new sentinel for it.

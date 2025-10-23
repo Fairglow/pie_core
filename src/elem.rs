@@ -1,4 +1,4 @@
-//! Definition of the generic ListElem<T> type.
+//! Definition of the generic `ListElem<T>` type.
 
 use crate::index::Index;
 use std::{fmt, mem};

@@ -1,7 +1,10 @@
+#![feature(linked_list_cursors)]
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
 use pie_core::{ElemPool, PieList, FibHeap as PieFibHeap};
 use index_list::IndexList; // Import the crate for comparison
+use std::collections::LinkedList;
+use std::vec::Vec;
 
 // --- Imports for heap benchmarks ---
 use std::collections::BinaryHeap;
@@ -109,6 +112,35 @@ fn index_list_insert_remove_middle_benchmark(c: &mut Criterion) {
                 let middle_idx = list.iter().nth(LIST_SIZE / 2).unwrap();
                 let new_idx = list.insert_before((*middle_idx).into(), black_box(999));
                 list.remove(new_idx);
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+}
+
+/// Comparison using std::collections::LinkedList
+fn linked_list_insert_remove_middle_benchmark(c: &mut Criterion) {
+    c.bench_function("linked_list-insert_remove_middle", |b| {
+        b.iter_batched(
+            // Setup
+            || {
+                let mut list = LinkedList::new();
+                for i in 0..LIST_SIZE {
+                    list.push_back(i as u64);
+                }
+                list
+            },
+            // Measured code
+            |mut list| {
+                let mut cursor = list.cursor_front_mut();
+                // O(n) seek
+                for _ in 0..(LIST_SIZE / 2) {
+                    cursor.move_next();
+                }
+                // O(1) + alloc
+                cursor.insert_before(black_box(999));
+                // O(1) + dealloc
+                cursor.remove_current();
             },
             criterion::BatchSize::SmallInput,
         )
@@ -425,6 +457,7 @@ criterion_group!(
     iter_benchmark,
     pielist_insert_remove_middle_benchmark,
     index_list_insert_remove_middle_benchmark,
+    linked_list_insert_remove_middle_benchmark,
     splice_before_benchmark,
     pielist_sort_benchmark,
 

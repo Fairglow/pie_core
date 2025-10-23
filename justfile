@@ -1,19 +1,22 @@
 # Just recipes for build actions
-alias bin := release
+alias lib := release
+alias doc := documentation
 alias old := outdated
 
 all: build examples release
 
-bench:
+bench: table
     cargo bench
     target/release/bench-table
 
 build:
     cargo build --all-targets && cargo clippy
 
+documentation:
+    cargo doc --no-deps --open
+
 examples:
-    cargo build --examples
-    cargo build -p bench-table --release
+    cargo build --examples --release
 
 outdated:
     cargo outdated --depth=1
@@ -21,13 +24,11 @@ outdated:
 release:
     cargo build --release
 
+table:
+    cargo build -p bench-table --release
+
 test:
     cargo nextest run --test-threads num-cpus
 
 test-out:
     cargo nextest run --no-capture --test-threads num-cpus
-
-test-rel:
-    cargo nextest run --release --test-threads num-cpus
-
-tests: test test-rel

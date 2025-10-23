@@ -10,7 +10,7 @@ bench: table
     target/release/bench-table
 
 build:
-    cargo build --all-targets && cargo clippy
+    cargo build && cargo clippy
 
 documentation:
     cargo doc --no-deps --open

@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(heap.peek(), Some((&10, &'a')));
 
         // Decrease key of 'b'. It's a root, so no cut is needed.
-        heap.decrease_key(handle, 5);
+        let _ = heap.decrease_key(handle, 5);
         assert_eq!(heap.peek(), Some((&5, &'b')));
         assert_eq!(heap.len(), 2);
     }
@@ -674,7 +674,7 @@ mod tests {
 
         // Decrease key of 20 to 8. This violates heap property.
         // Node 20 (now 8) must be cut and moved to root list.
-        heap.decrease_key(handle_20, 8);
+        let _ = heap.decrease_key(handle_20, 8);
 
         assert_eq!(heap.peek(), Some((&8, &'b')));
         assert_eq!(heap.len(), 2);
@@ -725,7 +725,7 @@ mod tests {
         );
 
         // 2. Cut C (h40) from P (h30). This must MARK P (h30).
-        heap.decrease_key(h40, 5); // New key is 5.
+        let _ = heap.decrease_key(h40, 5); // New key is 5.
         println!("#4: {heap}"); // h40 is now a root
 
         // Verify C (h40) is now a root.
@@ -745,7 +745,7 @@ mod tests {
         );
 
         // 3. Now, cut P (h30) from GP (h10). This must trigger a CASCADING CUT.
-        heap.decrease_key(h30, 6); // New key is 6.
+        let _ = heap.decrease_key(h30, 6); // New key is 6.
         println!("#5: {heap}"); // h30 is now a root
 
         // Verify P (h30) is now a root.
@@ -778,7 +778,7 @@ mod tests {
     fn test_decrease_key_panic() {
         let mut heap = FibHeap::new();
         let handle = heap.push(10, ());
-        heap.decrease_key(handle, 20); // Panics because 20 > 10
+        let _ = heap.decrease_key(handle, 20); // Panics because 20 > 10
     }
 
     #[test]

@@ -362,7 +362,7 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
                     // The new key is `i`. Since the initial key was HEAP_SIZE * 2,
                     // this is always a valid decrease (e.g., 2000 -> 0, 2000 -> 1, etc.).
                     let new_key = i;
-                    heap.decrease_key(handle, black_box(new_key));
+                    heap.decrease_key(handle, black_box(new_key)).ok();
                 }
             },
             criterion::BatchSize::SmallInput,

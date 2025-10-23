@@ -29,7 +29,7 @@ fn main() {
     // --- DECREASE_KEY (Simple Cut) ---
     println!("\n4. Decreasing key of 'grape' from 20 to 2.");
     println!("   This violates the heap property, causing a CUT.");
-    heap.decrease_key(handle_to_decrease, 2);
+    let _ = heap.decrease_key(handle_to_decrease, 2);
     println!("{heap}");
     println!("   - 'grape'(2) is now a root and the new minimum.");
     println!("   - Its former parent, 'melon'(15), is now marked (M) because it lost a child.");
@@ -70,10 +70,10 @@ fn main() {
     println!("\n   Step B: Mark the 'Grandparent' and 'Parent' nodes.");
 
     // Cut "GP-Sibling"(70) from "Grandparent"(60). This marks the Grandparent.
-    cascade_heap.decrease_key(h70, 18);
+    let _ = cascade_heap.decrease_key(h70, 18);
 
     // Cut "Child"(90) from "Parent"(80). This marks the Parent.
-    cascade_heap.decrease_key(h90, 17);
+    let _ = cascade_heap.decrease_key(h90, 17);
 
     println!("{cascade_heap}");
     println!("   - 'GP-Sibling'(18) and 'Child'(17) are now roots.");
@@ -86,7 +86,7 @@ fn main() {
     // Because 'Grandparent'(60) is already marked, the cut will cascade upwards.
     println!("\n   Step C: Cut 'Parent'(80) from the marked 'Grandparent'(60).");
     println!("   This triggers the multi-level cascading cut.");
-    cascade_heap.decrease_key(h80, 16);
+    let _ = cascade_heap.decrease_key(h80, 16);
     println!("{cascade_heap}");
     println!("   - 'Parent'(16) is cut from 'Grandparent' and becomes a root. Its mark is cleared.");
     println!("   - The cut CASCADES: 'Grandparent'(60) was marked and just lost a child, so it is");

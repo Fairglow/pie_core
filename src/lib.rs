@@ -79,6 +79,8 @@ mod index;
 mod list;
 mod pool;
 mod heap;
+#[cfg(feature = "petgraph")]
+mod petgraph;
 
 // --- Public API Re-exports ---
 pub use cursor::CursorMut;
@@ -86,4 +88,6 @@ pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
 pub use pool::{ElemPool, IndexError};
-pub use heap::{FibHeap, FibHandle, DecreaseKeyError};
+pub use heap::{FibHeap, FibHandle, Node, DecreaseKeyError};
+#[cfg(feature = "petgraph")]
+pub use petgraph::dijkstra_pie_core;

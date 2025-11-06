@@ -6,17 +6,21 @@ alias old := outdated
 all: build examples release
 
 bench: table
-    cargo +nightly bench
+    cargo +nightly bench --features petgraph
     target/release/bench-table
 
 build:
     cargo build && cargo clippy
+
+dijkstra:
+    cargo run -p dijkstra --release
 
 documentation:
     cargo doc --no-deps --open
 
 examples:
     cargo build --examples --release
+    cargo build -p dijkstra --release
 
 outdated:
     cargo outdated --depth=1

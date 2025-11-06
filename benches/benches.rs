@@ -1,12 +1,13 @@
-#![feature(linked_list_cursors)]
+#![feature(linked_list_cursors)] // 'petgraph' is a crate, not a feature flag
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
+// Remove dijkstra_pie_core from here, it will be imported in the conditional module
 use pie_core::{ElemPool, PieList, FibHeap as PieFibHeap};
 use index_list::IndexList; // Import the crate for comparison
 use std::collections::LinkedList;
 use std::vec::Vec;
 
-// --- Imports for heap benchmarks ---
+// Imports for heap benchmarks
 use std::collections::BinaryHeap;
 use std::cmp::Reverse; // To turn max-heaps into min-heaps
 use fibonacci_heap::FibonacciHeap as ExtFibHeap;
@@ -14,7 +15,6 @@ use priority_queue::PriorityQueue;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-// ---------------------------------
 
 const LIST_SIZE: usize = 1000;
 const HEAP_SIZE: usize = 1000; // Use the same size for heap tests
@@ -231,6 +231,7 @@ fn bench_heap_push(c: &mut Criterion) {
             || ExtFibHeap::new(),
             |mut heap| {
                 for i in 0..HEAP_SIZE {
+                    // extfibheap needs a key and a value
                     heap.insert(black_box(i as i32)).unwrap();
                 }
             },
@@ -304,7 +305,7 @@ fn bench_heap_pop_all(c: &mut Criterion) {
             || {
                 let mut heap = ExtFibHeap::new();
                 for &key in &random_keys {
-                    heap.insert(key as i32).unwrap();
+                    heap.insert(key as i32).unwrap(); // extfibheap needs K, V
                 }
                 heap
             },
@@ -370,23 +371,20 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
     // which is a more realistic workload.
     random_indices.shuffle(&mut rng);
 
-    // This vector is no longer needed, as we will generate keys sequentially.
-    // let random_new_keys: Vec<usize> = (0..HEAP_SIZE).map(|_| rng.gen_range(0..HEAP_SIZE)).collect();
-
     group.bench_function("pielist-decrease_key", |b| {
         b.iter_batched(
             || {
                 let mut heap = PieFibHeap::new();
                 let mut handles = Vec::with_capacity(HEAP_SIZE);
                 for i in 0..HEAP_SIZE {
-                    // MODIFICATION: Initialize with a key that is guaranteed to be
+                    // Initialize with a key that is guaranteed to be
                     // larger than any key we will decrease to.
                     handles.push(heap.push(HEAP_SIZE * 2, i));
                 }
                 (heap, handles)
             },
             |(mut heap, handles)| {
-                // MODIFICATION: Iterate through the shuffled indices to ensure each
+                // Iterate through the shuffled indices to ensure each
                 // node is updated exactly once per batch run.
                 for i in 0..HEAP_SIZE {
                     // The handle to the node we will update.
@@ -401,18 +399,22 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
         )
     });
 
+    // Note: extfibheap::FibonacciHeap does not expose a decrease_key
+    // method that takes an arbitrary handle. It's not a 1:1 comparison.
+    // We will benchmark PriorityQueue and BinaryHeap (simulated decrease_key)
+
     group.bench_function("priorityqueue-change_priority", |b| {
         b.iter_batched(
             || {
                 let mut heap = PriorityQueue::new();
                 for i in 0..HEAP_SIZE {
-                    // MODIFICATION: Use the same larger initial key.
+                    // Use the same larger initial key.
                     heap.push(i, Reverse(HEAP_SIZE * 2));
                 }
                 heap
             },
             |mut heap| {
-                // MODIFICATION: Use the same logic as the pielist bench.
+                // Use the same logic as the pielist bench.
                 for i in 0..HEAP_SIZE {
                     let item_id = &random_indices[i];
                     let new_key = i;
@@ -423,18 +425,22 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("binaryheap-push", |b| {
+    // This benchmark simulates "decrease key" for a BinaryHeap
+    // by just pushing a new, smaller-keyed item. This is the
+    // standard way it's done in Dijkstra's when you don't have
+    // decrease_key.
+    group.bench_function("binaryheap-push_simulation", |b| {
         b.iter_batched(
             || {
                 let mut heap = BinaryHeap::new();
                 for i in 0..HEAP_SIZE {
-                    // MODIFICATION: Use the same larger initial key.
+                    // Use the same larger initial key.
                     heap.push((Reverse(HEAP_SIZE * 2), i));
                 }
                 heap
             },
             |mut heap| {
-                // MODIFICATION: Use the same logic as the pielist bench.
+                // Use the same logic as the pielist bench.
                 for i in 0..HEAP_SIZE {
                     let item_id = random_indices[i];
                     let new_key = i;
@@ -448,22 +454,169 @@ fn bench_heap_decrease_key(c: &mut Criterion) {
     group.finish();
 }
 
+// ##################################################################
+// # Dijkstra Benchmarks (Conditionally Compiled)
+// ##################################################################
+
+// We wrap all petgraph-related benchmarks in a module.
+// This module will only be compiled if the "petgraph" feature is enabled.
+#[cfg(feature = "petgraph")]
+mod dijkstra_bench {
+    use super::*; // Import common items from parent
+    use petgraph::graph::Graph;
+    use petgraph::algo::dijkstra;
+    use pie_core::dijkstra_pie_core; // This is the function to test
+    use rand::Rng;
+
+    /// Creates a dense graph with `node_count` nodes and `edge_count` random edges.
+    fn create_dense_graph(node_count: usize, edge_count: usize) -> Graph<&'static str, u64> {
+        let mut graph = Graph::new();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Add nodes
+        let nodes: Vec<_> = (0..node_count).map(|_| graph.add_node("")).collect();
+
+        // Add random edges
+        for _ in 0..edge_count {
+            let a_idx = rng.random_range(0..node_count);
+            let b_idx = rng.random_range(0..node_count);
+            if a_idx == b_idx { continue; } // Avoid self-loops for simplicity
+
+            let a = nodes[a_idx];
+            let b = nodes[b_idx];
+            let weight = rng.random_range(1..1000);
+            graph.add_edge(a, b, weight);
+        }
+        graph
+    }
+
+    /// Creates a sparse grid graph (like a chessboard) of `width` x `height`.
+    /// Total nodes = width * height.
+    /// Total edges = roughly (width-1)*height + width*(height-1)
+    fn create_sparse_graph(width: usize, height: usize) -> Graph<&'static str, u64> {
+        let mut graph = Graph::new();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Add nodes
+        let nodes: Vec<Vec<_>> = (0..height)
+            .map(|_| (0..width).map(|_| graph.add_node("")).collect())
+            .collect();
+
+        // Add edges
+        for r in 0..height {
+            for c in 0..width {
+                let current_node = nodes[r][c];
+
+                // Add edge to the right
+                if c + 1 < width {
+                    let right_node = nodes[r][c + 1];
+                    let weight = rng.random_range(1..100);
+                    graph.add_edge(current_node, right_node, weight);
+                }
+                // Add edge downwards
+                if r + 1 < height {
+                    let down_node = nodes[r + 1][c];
+                    let weight = rng.random_range(1..100);
+                    graph.add_edge(current_node, down_node, weight);
+                }
+            }
+        }
+        graph
+    }
+
+
+    pub fn bench_dijkstra_dense(c: &mut Criterion) {
+        // 100 nodes, 5000 edges. (n=100, m=5000). m is close to n^2/2.
+        let dense_graph = create_dense_graph(100, 5000);
+        let start_node = dense_graph.node_indices().next().unwrap();
+
+        let mut group = c.benchmark_group("Dijkstra (Dense Graph, n=100, m=5000)");
+
+        // Benchmark 1: The standard petgraph::algo::dijkstra (BinaryHeap)
+        group.bench_function("petgraph-dijkstra (dense)", |b| {
+            b.iter(|| {
+                dijkstra(
+                    black_box(&dense_graph),
+                    black_box(start_node),
+                    None,
+                    |e| *e.weight(),
+                )
+            })
+        });
+
+        // Benchmark 2: Your implementation (FibHeap)
+        group.bench_function("pie_core-dijkstra (dense)", |b| {
+            b.iter(|| {
+                dijkstra_pie_core(
+                    black_box(&dense_graph),
+                    black_box(start_node)
+                )
+            })
+        });
+
+        group.finish();
+    }
+
+    pub fn bench_dijkstra_sparse(c: &mut Criterion) {
+        // 100x100 grid. n = 10_000 nodes.
+        // m = (100-1)*100 + 100*(100-1) = 9900 + 9900 = 19_800 edges.
+        // m is ~2n, which is very sparse.
+        let sparse_graph = create_sparse_graph(100, 100);
+        let start_node = sparse_graph.node_indices().next().unwrap();
+
+        let mut group = c.benchmark_group("Dijkstra (Sparse Graph, n=10k, m=20k)");
+
+        // Benchmark 1: The standard petgraph::algo::dijkstra (BinaryHeap)
+        group.bench_function("petgraph-dijkstra (sparse)", |b| {
+            b.iter(|| {
+                dijkstra(
+                    black_box(&sparse_graph),
+                    black_box(start_node),
+                    None,
+                    |e| *e.weight(),
+                )
+            })
+        });
+
+        // Benchmark 2: Your implementation (FibHeap)
+        group.bench_function("pie_core-dijkstra (sparse)", |b| {
+            b.iter(|| {
+                dijkstra_pie_core(
+                    black_box(&sparse_graph),
+                    black_box(start_node)
+                )
+            })
+        });
+
+        group.finish();
+    }
+}
+
 
 // Group the benchmarks and define the main entry point.
-criterion_group!(
-    benches,
-    // PieList benchmarks
-    push_back_benchmark,
-    iter_benchmark,
-    pielist_insert_remove_middle_benchmark,
-    index_list_insert_remove_middle_benchmark,
-    linked_list_insert_remove_middle_benchmark,
-    splice_before_benchmark,
-    pielist_sort_benchmark,
+// We need to conditionally register the dijkstra benchmarks.
+fn register_benches(c: &mut Criterion) {
+    // Register all non-conditional benchmarks
+    push_back_benchmark(c);
+    iter_benchmark(c);
+    pielist_insert_remove_middle_benchmark(c);
+    index_list_insert_remove_middle_benchmark(c);
+    linked_list_insert_remove_middle_benchmark(c);
+    splice_before_benchmark(c);
+    pielist_sort_benchmark(c);
 
-    // FibHeap benchmarks
-    bench_heap_push,
-    bench_heap_pop_all,
-    bench_heap_decrease_key,
-);
+    bench_heap_push(c);
+    bench_heap_pop_all(c);
+    bench_heap_decrease_key(c);
+
+    // Conditionally register the dijkstra benchmarks
+    #[cfg(feature = "petgraph")]
+    {
+        dijkstra_bench::bench_dijkstra_dense(c);
+        dijkstra_bench::bench_dijkstra_sparse(c);
+    }
+}
+
+// Use a custom main to call our registration function
+criterion_group!(benches, register_benches);
 criterion_main!(benches);

@@ -1,10 +1,8 @@
-#![feature(linked_list_cursors)] // 'petgraph' is a crate, not a feature flag
+#![cfg_attr(feature = "bench-nightly", feature(linked_list_cursors))]
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
-// Remove dijkstra_pie_core from here, it will be imported in the conditional module
 use pie_core::{ElemPool, PieList, FibHeap as PieFibHeap};
 use index_list::IndexList; // Import the crate for comparison
-use std::collections::LinkedList;
 use std::vec::Vec;
 
 // Imports for heap benchmarks
@@ -118,33 +116,39 @@ fn index_list_insert_remove_middle_benchmark(c: &mut Criterion) {
     });
 }
 
-/// Comparison using std::collections::LinkedList
-fn linked_list_insert_remove_middle_benchmark(c: &mut Criterion) {
-    c.bench_function("linked_list-insert_remove_middle", |b| {
-        b.iter_batched(
-            // Setup
-            || {
-                let mut list = LinkedList::new();
-                for i in 0..LIST_SIZE {
-                    list.push_back(i as u64);
-                }
-                list
-            },
-            // Measured code
-            |mut list| {
-                let mut cursor = list.cursor_front_mut();
-                // O(n) seek
-                for _ in 0..(LIST_SIZE / 2) {
-                    cursor.move_next();
-                }
-                // O(1) + alloc
-                cursor.insert_before(black_box(999));
-                // O(1) + dealloc
-                cursor.remove_current();
-            },
-            criterion::BatchSize::SmallInput,
-        )
-    });
+#[cfg(feature = "bench-nightly")]
+mod linked_list_bench {
+    use super::*;
+    use std::collections::LinkedList;
+
+    /// Comparison using std::collections::LinkedList
+    pub fn linked_list_insert_remove_middle_benchmark(c: &mut Criterion) {
+        c.bench_function("linked_list-insert_remove_middle", |b| {
+            b.iter_batched(
+                // Setup
+                || {
+                    let mut list = LinkedList::new();
+                    for i in 0..LIST_SIZE {
+                        list.push_back(i as u64);
+                    }
+                    list
+                },
+                // Measured code
+                |mut list| {
+                    let mut cursor = list.cursor_front_mut();
+                    // O(n) seek
+                    for _ in 0..(LIST_SIZE / 2) {
+                        cursor.move_next();
+                    }
+                    // O(1) + alloc
+                    cursor.insert_before(black_box(999));
+                    // O(1) + dealloc
+                    cursor.remove_current();
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
 }
 
 
@@ -601,13 +605,18 @@ fn register_benches(c: &mut Criterion) {
     iter_benchmark(c);
     pielist_insert_remove_middle_benchmark(c);
     index_list_insert_remove_middle_benchmark(c);
-    linked_list_insert_remove_middle_benchmark(c);
     splice_before_benchmark(c);
     pielist_sort_benchmark(c);
 
     bench_heap_push(c);
     bench_heap_pop_all(c);
     bench_heap_decrease_key(c);
+
+    // Conditionally register the nightly benchmarks
+    #[cfg(feature = "bench-nightly")]
+    {
+        linked_list_bench::linked_list_insert_remove_middle_benchmark(c);
+    }
 
     // Conditionally register the dijkstra benchmarks
     #[cfg(feature = "petgraph")]

@@ -6,7 +6,7 @@ alias old := outdated
 all: build examples release
 
 bench: table
-    cargo +nightly bench --features petgraph
+    cargo +nightly bench --features petgraph,bench-nightly
     target/release/bench-table
 
 build:

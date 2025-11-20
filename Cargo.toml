@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "pie_core"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "MPL-2.0"
 authors = ["Stefan Lindblad <stefan.lindblad@linux.com>"]
@@ -39,6 +39,7 @@ petgraph = { version = "0.6", optional = true }
 [features]
 default = []
 petgraph = ["dep:petgraph"]
+bench-nightly = []
 
 [dev-dependencies]
 criterion = "0.7"

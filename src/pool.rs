@@ -2,6 +2,7 @@
 
 use crate::elem::ListElem;
 use crate::Index;
+use std::collections::HashMap;
 use std::fmt;
 
 /// An error type representing failures in list operations.
@@ -340,6 +341,89 @@ impl<T> ElemPool<T> {
         self.get_mut(prev_ndx)?.new_next(this);
         Ok(())
     }
+
+    /// Compacts the pool by moving elements from the end of the internal vector
+    /// into free slots at the beginning.
+    ///
+    /// This implementation relies on the internal free list to identify holes
+    /// efficiently, avoiding a full scan of the pool's lower bounds.
+    pub fn shrink_to_fit(&mut self) -> HashMap<Index<T>, Index<T>> {
+        let old_len = self.elems.len();
+        // The target length is simply total items minus the count of free items.
+        // Note: self.len() is used items, self.freed is free items.
+        // old_len includes both PLUS sentinels. 
+        // So target_len = old_len - self.freed.
+        let target_len = old_len - self.freed;
+        // If we are already compact, return empty map.
+        if target_len == old_len {
+            return HashMap::new();
+        }
+        // 1. Identify Vacancies and Tag Tail-Free items.
+        // We need a way to quickly check if an item in the tail is free.
+        // Since the tail size is exactly equal to self.freed, we can allocate
+        // a boolean map for just the tail section.
+        // Map index i -> vector index (target_len + i)
+        let mut is_free_tail = vec![false; self.freed];
+        let mut vacancies = Vec::with_capacity(self.freed);
+        let free_sentinel = Self::free_sentinel_index();
+        let mut current_free = self.next(free_sentinel);
+        while current_free != free_sentinel {
+            let idx_u32 = current_free.get().unwrap();
+            if idx_u32 < target_len {
+                // This is a hole in the preserved region. We must fill it.
+                vacancies.push(idx_u32);
+            } else {
+                // This is a hole in the region we are cutting off.
+                // We mark it so the tail-scanner knows to ignore it.
+                is_free_tail[idx_u32 - target_len] = true;
+            }
+            current_free = self.next(current_free);
+        }
+        // 2. Move Used Items from Tail to Head
+        let mut remapping = HashMap::new();
+        // We iterate the tail region. Any item NOT marked as free is implicitly
+        // a "Used" item (either User Data or a List Sentinel).
+        for source in target_len..old_len {
+            if is_free_tail[source - target_len] {
+                continue; // It's a free node in the tail; it will be truncated.
+            }
+            // It is a used node. Pop a vacancy to move it to.
+            // Safety: The math guarantees vacancies.len() > 0 because
+            // number of used items in tail == number of free items in head.
+            let dest = vacancies.pop().expect("Logic Error: Mismatch in free/used counts");
+            // Swap the elements
+            self.elems.swap(dest, source);
+            let old_idx = Index::from(source);
+            let new_idx = Index::from(dest);
+            remapping.insert(old_idx, new_idx);
+            // 3. Fix Neighbors (The Graph Patching)
+            // The node at `dest` currently thinks its neighbors are pointing to `source`.
+            // We must update those neighbors to point to `dest`.
+            let (prev_idx, next_idx) = self.elems[dest].links();
+            // Fix prev's next pointer
+            // Handle self-references (sentinels pointing to themselves)
+            let effective_prev = if prev_idx == old_idx { new_idx } else { prev_idx };
+            // We use unwrap because a used node must have valid neighbors.
+            if let Ok(elem) = self.get_mut(effective_prev) {
+                elem.next = new_idx;
+            }
+            // Fix next's prev pointer
+            let effective_next = if next_idx == old_idx { new_idx } else { next_idx };
+            if let Ok(elem) = self.get_mut(effective_next) {
+                elem.prev = new_idx;
+            }
+        }
+        // 4. Final Cleanup
+        // Truncate the vector
+        self.elems.truncate(target_len);
+        // Reset pool state
+        self.freed = 0;
+        // Reset the free list sentinel to point to itself (empty list)
+        if let Some(sentinel) = self.elems.get_mut(0) {
+             let _ = sentinel.new_links(free_sentinel, free_sentinel);
+        }
+        remapping
+    }
 }
 
 impl<T> fmt::Display for ElemPool<T>
@@ -363,6 +447,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rand::Rng;
+
     use super::*;
     use crate::list::PieList;
 
@@ -547,5 +633,131 @@ mod tests {
         assert_eq!(pool.validate_index(i2), Err(IndexError::BrokenPrevLink));
         // i1 thinks its next is i3, but i3's prev is i2. So i1's next link is broken.
         assert_eq!(pool.validate_index(i1), Err(IndexError::BrokenNextLink));
+    }
+
+    #[test]
+    fn test_shrink_simple() {
+        // Scenario: [PoolSen, ListSen, ItemA, (Free), ItemB]
+        // Goal: Move ItemB to (Free).
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back("A", &mut pool).unwrap();
+        let idx_to_remove = list.push_back("RemoveMe", &mut pool).unwrap();
+        list.push_back("B", &mut pool).unwrap();
+
+        // Create hole
+        let _ = pool.data_swap(idx_to_remove, None); // remove data
+        pool.index_linkout(idx_to_remove).unwrap();  // unlink from list
+        list.len -= 1;                               // update list len
+        pool.index_del(idx_to_remove).unwrap();      // add to free list
+
+        assert_eq!(pool.freed, 1);
+        let old_cap = pool.capacity();
+
+        let map = pool.shrink_to_fit();
+        list.remap(&map);
+
+        assert_eq!(pool.freed, 0);
+        assert!(pool.capacity() < old_cap);
+
+        // Verify list integrity
+        let vec: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(vec, vec!["A", "B"]);
+
+        // Validate all indices
+        let mut curr = pool.next(list.sentinel);
+        while curr != list.sentinel {
+            assert!(pool.validate_index(curr).is_ok());
+            curr = pool.next(curr);
+        }
+    }
+
+    #[test]
+    fn test_shrink_with_sentinel_move() {
+        // Scenario: A list whose SENTINEL is at the end of the pool.
+        // The sentinel itself must move to fill a hole.
+        let mut pool = ElemPool::new();
+
+        // 1. Create some noise to fill low indices
+        let mut noise_list = PieList::new(&mut pool);
+        noise_list.push_back("Noise", &mut pool).unwrap();
+
+        // 2. Create the target list (High indices)
+        let mut list = PieList::new(&mut pool); // Sentinel allocated high
+        list.push_back("Data", &mut pool).unwrap();
+
+        // 3. Delete the noise to create holes at the bottom
+        noise_list.clear(&mut pool); 
+        // Now the bottom of the pool is free. `list` sentinel is at the top.
+
+        let map = pool.shrink_to_fit();
+        list.remap(&map); // Crucial! Sentinel likely moved.
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(*list.front(&pool).unwrap(), "Data");
+
+        // Check graph integrity (self-reference of sentinel)
+        let sent_elem = pool.get(list.sentinel).unwrap();
+        assert!(sent_elem.next != list.sentinel, "Sentinel should point to Data");
+        assert!(sent_elem.prev != list.sentinel, "Sentinel should point to Data");
+    }
+
+    #[test]
+    fn test_shrink_randomized_stress() {
+        // Stress test with random insertions and deletions
+        let mut pool = ElemPool::<usize>::new();
+        let mut lists = Vec::new();
+        let mut rng = rand::rng(); // Use rng() for Rand 0.9
+
+        // Create 10 lists
+        for _ in 0..10 {
+            lists.push(PieList::new(&mut pool));
+        }
+
+        // 1. Random Populate
+        for _ in 0..1000 {
+            let list_idx = rng.random_range(0..10);
+            let val = rng.random_range(0..10000);
+            lists[list_idx].push_back(val, &mut pool).unwrap();
+        }
+
+        // 2. Random Delete (Create cheese holes)
+        for _ in 0..400 {
+            let list_idx = rng.random_range(0..10);
+            if !lists[list_idx].is_empty() {
+                lists[list_idx].pop_front(&mut pool);
+            }
+        }
+
+        let total_items_before: usize = lists.iter().map(|l| l.len()).sum();
+        assert_eq!(pool.len(), total_items_before);
+        assert!(pool.freed > 0);
+
+        // 3. Shrink
+        let map = pool.shrink_to_fit();
+
+        // 4. Remap
+        for list in lists.iter_mut() {
+            list.remap(&map);
+        }
+
+        // 5. Verify
+        assert_eq!(pool.freed, 0);
+        assert_eq!(pool.len(), total_items_before);
+
+        let total_items_after: usize = lists.iter().map(|l| l.len()).sum();
+        assert_eq!(total_items_after, total_items_before);
+
+        // Verify structural integrity of every list
+        for list in lists {
+            let mut count = 0;
+            let mut curr = pool.next(list.sentinel);
+            while curr != list.sentinel {
+                assert!(pool.validate_index(curr).is_ok());
+                count += 1;
+                curr = pool.next(curr);
+            }
+            assert_eq!(count, list.len());
+        }
     }
 }

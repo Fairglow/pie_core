@@ -5,6 +5,7 @@
 use crate::cursor::CursorMut;
 use crate::index::Index;
 use crate::pool::{ElemPool, IndexError};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 /// A handle to a doubly-linked list within a shared `ElemPool`.
@@ -138,12 +139,12 @@ impl<T> PieList<T> {
     ///
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
-    pub fn push_front(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
+    pub fn push_front(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
         pool.index_link_after(new_idx, self.sentinel)?;
         self.len += 1;
-        Ok(())
+        Ok(new_idx)
     }
 
     /// Adds an element to the back of the list.
@@ -153,12 +154,12 @@ impl<T> PieList<T> {
     ///
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
-    pub fn push_back(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
+    pub fn push_back(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
         pool.index_link_before(new_idx, self.sentinel)?;
         self.len += 1;
-        Ok(())
+        Ok(new_idx)
     }
 
     /// Removes the first element and returns its data, or `None` if the list is empty.
@@ -529,6 +530,21 @@ impl<T> PieList<T> {
             }
         }
         Ok(CursorMut::new(self, current_idx, index))
+    }
+
+    /// Updates the list's internal sentinel index if it was affected by a `shrink_to_fit` operation.
+    ///
+    /// This method checks the provided remapping table to see if the sentinel node
+    /// for this list was moved to a new index. If so, it updates the `PieList`
+    /// handle to point to the new location.
+    ///
+    /// # Complexity
+    /// O(1) - It performs a single hash map lookup.
+    pub fn remap(&mut self, map: &HashMap<Index<T>, Index<T>>) {
+        // We check if our specific sentinel index is in the map of moved nodes.
+        if let Some(&new_index) = map.get(&self.sentinel) {
+            self.sentinel = new_index;
+        }
     }
 }
 

@@ -22,7 +22,6 @@ use std::{convert::TryFrom, fmt, hash::{Hash, Hasher}, marker::PhantomData};
 /// - **API Clarity:** Using `Index<T>` in function signatures makes it clear
 ///   that the function expects a handle to a list element, not just an arbitrary
 ///   number.
-#[derive(Eq)]
 pub struct Index<T> {
     ndx: u32,
     _marker: PhantomData<T>,
@@ -60,6 +59,8 @@ impl<T> PartialEq for Index<T> {
         self.ndx == other.ndx
     }
 }
+
+impl<T> Eq for Index<T> {}
 
 impl<T> Hash for Index<T> {
     #[inline]

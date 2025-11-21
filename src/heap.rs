@@ -13,6 +13,8 @@ use serde::{Serialize, Deserialize};
 pub enum DecreaseKeyError {
     /// The provided handle was invalid (e.g., NONE, out of bounds, or pointed to a free node).
     InvalidHandle,
+    /// The new key is greater than current
+    NewKeyGreaterThanCurrent,
 }
 
 impl std::error::Error for DecreaseKeyError {}
@@ -21,6 +23,7 @@ impl fmt::Display for DecreaseKeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidHandle => write!(f, "Invalid handle provided to decrease_key"),
+            Self::NewKeyGreaterThanCurrent => write!(f, "Key greater than current provided"),
         }
     }
 }
@@ -336,11 +339,12 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// to priorities. The handle must be one that was returned by a previous
     /// call to `push`.
     ///
-    /// # Panics
+    /// # Decrease only
     ///
-    /// Panics if `new_key` is greater than the node's current key, or if the
-    /// handle is invalid.
-    ///
+    /// The design is optimized for decreasing the key at the expense of the
+    /// efficiency of increasing them. Therefore, use-case where keys increase
+    /// are not suitable for this implementation.
+    /// 
     /// # Complexity
     ///
     /// O(1) amortized time.
@@ -366,8 +370,7 @@ impl<K: Ord, V> FibHeap<K, V> {
         let parent = {
             let node = self.pool.data(handle).ok_or(DecreaseKeyError::InvalidHandle)?;
             if new_key > node.key {
-                // We *keep* this panic. It's a logical contract violation.
-                panic!("new_key is greater than current key");
+                return Err(DecreaseKeyError::NewKeyGreaterThanCurrent);
             }
             node.parent
         };
@@ -827,11 +830,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_decrease_key_panic() {
         let mut heap = FibHeap::new();
         let handle = heap.push(10, ());
-        let _ = heap.decrease_key(handle, 20); // Panics because 20 > 10
+        let err = heap.decrease_key(handle, 20);
+        assert_eq!(err, Err(DecreaseKeyError::NewKeyGreaterThanCurrent));
     }
 
     #[test]

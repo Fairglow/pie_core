@@ -47,7 +47,7 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
   * **Performance-Critical Loops**: In game development, simulations, or real-time systems where you frequently add, remove, or reorder items in the middle of a large collection.
   * **Efficient Priority Queues**: When you need a priority queue that supports an efficient O(1) amortized `decrease_key` operation, which is common in graph algorithms like Dijkstra's or Prim's.
   * **Managing Many Small Structures**: When you need to manage a large number of independent lists or heaps, sharing a single `ElemPool` is far more memory-efficient than having each structure handle its own allocations.
-  * **Stable Indices Required**: The indices used by `pie_core` are stable; unlike a `Vec`, inserting or removing elements does not invalidate the indices of other elements.
+  * **Stable Indices**: The indices used by `pie_core` are stable; unlike a `Vec`, inserting or removing elements does not invalidate the indices of other elements. Only shrinking the pool invalidates some of them.
 
 **Important Note on `T` Size**: `pie_core` stores the data `T` (or `K` and `V` for the heap) directly inside the node structure. This design is optimized for smaller types (`Copy` types, numbers, small structs). If the data is very large, the increased size of each element can reduce the cache-locality benefits, as fewer elements will fit into a single cache line.
 
@@ -63,7 +63,8 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
   * **API Verbosity**: The design requires passing a mutable reference to the `ElemPool` for every operation. This is necessary for safety but is more verbose than standard library collections.
   * **Not a Drop-in Replacement**: Due to its unique API, `pie_core` cannot be used as a direct replacement for standard library collections without refactoring the calling code.
-  * **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink.
+  * **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink automatically. The user is responsible for shrinking the pool at opportune moments, if necessary. Note: Shrinking the pool invalidates some of the existing indices; the operation returns a map translating old indices to new ones.
+  * **Non-RAII Cleanup**: Unlike standard collections, dropping a PieList does not deallocate its contents. Users must manually clear lists to return memory to the pool.
 
 ## **Alternatives**
 
@@ -77,13 +78,12 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
 ## **Disclosure of AI Collaboration**
 
-This library was developed as a collaborative effort between a human developer and Google's Gemini AI model.
+This library was developed as a collaborative effort between a human developer and Google's Gemini AI model. This was not a "vibe coding" exercise; the AI functioned more as a junior developer, receiving clear instructions and integrating hand-coded components. A clear vision of the design and goals guided the effort and ensured those objectives were met.
 
-  * **The AI's Role**: The AI was instrumental in writing the foundational code, implementing core features (like `split_before`, `splice_before`, and the `FibHeap` consolidation logic), generating the comprehensive test suite for each module, and refactoring the code to improve its design and fix bugs. It also provided multiple in-depth code reviews, identifying issues related to performance, idiomatic Rust, and correctness.
-  * **The Human's Role**: The human developer guided the overall architecture and design, set the goals, made final decisions on the public API, and performed critical reviews, and fixes, of all AI-generated code to ensure it met the project's standards for safety, performance, and maintainability.
+The AI wrote most of the code and performed well when given clear instructions, saving a significant amount of time. However, I can confidently say that it would not have achieved the end result on its own.
 
 This project serves as an example of human-AI partnership, where the AI acts as a highly capable pair programmer, accelerating development while the human provides the high-level direction and quality assurance.
 
-## **Assessment**
+## **AI Assessment**
 
 The result of this collaboration is a professional-grade, feature-complete library for its intended niche. It is efficient, idiomatic, and highly maintainable, with a correctness guarantee backed by a thorough test suite.

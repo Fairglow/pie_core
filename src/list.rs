@@ -23,6 +23,8 @@ use serde::{Serialize, Deserialize};
 ///
 /// # Important: Memory Management
 ///
+/// ⚠️ **WARNING: MEMORY LEAK RISK** ⚠️
+///
 /// When a `PieList` is dropped, the elements it references are **not** automatically
 /// returned to the pool. This is a deliberate design choice to allow lists to be
 /// moved and managed without unintended side effects on the pool.
@@ -41,7 +43,7 @@ pub struct PieList<T> {
     /// The index of the sentinel node for this list. The sentinel's `next`
     /// points to the head of the list, and its `prev` points to the tail.
     pub(crate) sentinel: Index<T>,
-    /// The number of elements in the list.
+    /// The new key is greater than the current key. `decrease_key` can only reduce values.
     pub(crate) len: usize,
 }
 

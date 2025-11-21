@@ -24,6 +24,11 @@ use serde::{Serialize, Deserialize};
 /// - **API Clarity:** Using `Index<T>` in function signatures makes it clear
 ///   that the function expects a handle to a list element, not just an arbitrary
 ///   number.
+/// 
+/// # Serialization
+/// 
+/// When serialized with Serde, this type serializes as a raw u32 (the
+/// transparency allows generic T to be ignored by the serializer).
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))] // Serialize as a raw u32, not a struct
 #[cfg_attr(feature = "serde", serde(bound = ""))]  // T does not need to be Serializable

@@ -206,6 +206,24 @@ impl<T> ElemPool<T> {
         Ok(())
     }
 
+    /// Returns an iterator over the pool's raw elements.
+    ///
+    /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
+    /// that require traversing the entire pool structure, such as remapping internal
+    /// pointers after a `shrink_to_fit` operation.
+    pub fn iter(&self) -> std::slice::Iter<'_, ListElem<T>> {
+        self.elems.iter()
+    }
+
+    /// Returns a mutable iterator over the pool's raw elements.
+    ///
+    /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
+    /// that require traversing the entire pool structure, such as remapping internal
+    /// pointers after a `shrink_to_fit` operation.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, ListElem<T>> {
+        self.elems.iter_mut()
+    }
+
     /// Allocates a new index, reusing a free element if available or creating a new one.
     ///
     /// This is the primary method for acquiring a new node from the pool. It

@@ -4,6 +4,7 @@ use crate::index::Index;
 use crate::list::PieList;
 use crate::pool::ElemPool;
 use std::{fmt, mem};
+use std::collections::HashMap;
 
 /// An error returned from `FibHeap::decrease_key`.
 #[derive(Debug, PartialEq, Eq)]
@@ -410,6 +411,53 @@ impl<K: Ord, V> FibHeap<K, V> {
         }
     }
 
+    /// Compacts the internal pool, reducing memory usage.
+    ///
+    /// This method shrinks the underlying `Vec` to match the number of live
+    /// nodes. Because this operation moves nodes in memory, it changes their
+    /// indices.
+    ///
+    /// # Returns
+    /// A `HashMap` mapping old handles to new handles.
+    ///
+    /// **CRITICAL:** If you are holding any `FibHandle`s returned by `push`,
+    /// you **must** update them using this map.
+    ///
+    /// ```rust
+    /// # use pie_core::FibHeap;
+    /// let mut heap = FibHeap::new();
+    /// let handle = heap.push(10, "data");
+    ///
+    /// let map = heap.shrink_to_fit();
+    ///
+    /// // Safe way to update your handle:
+    /// let new_handle = map.get(&handle).copied().unwrap_or(handle);
+    /// ```
+    pub fn shrink_to_fit(&mut self) -> HashMap<FibHandle<K, V>, FibHandle<K, V>> {
+        // 1. Shrink the pool. This moves nodes and fixes the Pool-level links.
+        let map = self.pool.shrink_to_fit();
+        // 2. Fix Heap-level pointers (roots and min)
+        self.roots.remap(&map);
+        if let Some(new_min) = map.get(&self.min) {
+            self.min = *new_min;
+        }
+        // 3. Fix Node-level pointers (parent and children)
+        // The pool's shrink method fixes `prev/next` links, but it knows nothing
+        // about the `parent` or `children` fields inside our `Node` struct.
+        // We must traverse the pool and update them manually.
+        for elem in self.pool.iter_mut() {
+            if let Some(node) = &mut elem.data {
+                // Fix parent pointer
+                if let Some(new_parent) = map.get(&node.parent) {
+                    node.parent = *new_parent;
+                }
+                // Fix children list sentinel pointer
+                node.children.remap(&map);
+            }
+        }
+        map
+    }
+
     /// Creates a draining iterator that removes all elements from the heap in
     /// ascending order of their keys and yields their (key, value) pairs.
     ///
@@ -543,6 +591,7 @@ impl<'a, K: Ord, V> Iterator for Drain<'a, K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_new_empty_len() {
@@ -802,5 +851,174 @@ mod tests {
         assert!(heap.is_empty());
         assert_eq!(heap.len(), 0);
         assert_eq!(heap.pop(), None);
+    }
+
+    /// Validates the internal consistency of the Heap's graph structure.
+    ///
+    /// This checks invariants that must hold true before and after shrinking:
+    /// 1. All nodes in the pool are reachable (no orphans).
+    /// 2. Parent/Child pointers are bidirectional and correct.
+    /// 3. Root nodes have no parents.
+    fn validate_heap_integrity<K: Ord + std::fmt::Debug, V>(heap: &FibHeap<K, V>) {
+        let mut visited = HashSet::new();
+        let mut nodes_to_visit = Vec::new();
+
+        // 1. Collect roots
+        if !heap.roots.is_empty() {
+            let mut current = heap.pool.next(heap.roots.sentinel);
+            while current != heap.roots.sentinel {
+                nodes_to_visit.push((current, FibHandle::NONE)); // Root has NONE parent
+                current = heap.pool.next(current);
+            }
+        }
+
+        // 2. Traverse the graph
+        while let Some((handle, expected_parent)) = nodes_to_visit.pop() {
+            assert!(visited.insert(handle), "Cycle detected or node visited twice!");
+
+            let node = heap.pool.data(handle).expect("Handle points to free/invalid memory");
+
+            // Check Parent integrity
+            assert_eq!(node.parent, expected_parent, "Node {:?} has wrong parent pointer", handle);
+
+            // Check Children
+            if !node.children.is_empty() {
+                let mut child = heap.pool.next(node.children.sentinel);
+                let mut count = 0;
+                while child != node.children.sentinel {
+                    nodes_to_visit.push((child, handle)); // Expect this node to be the parent
+                    child = heap.pool.next(child);
+                    count += 1;
+                }
+                assert_eq!(node.children.len(), count, "Child list len mismatch");
+            }
+        }
+
+        // 3. Ensure we visited every used node in the pool
+        // (Subtracting 1 for the pool sentinel is handled by pool.len())
+        assert_eq!(visited.len(), heap.len(), "Pool contains orphaned nodes not reachable from roots!");
+    }
+
+    #[test]
+    fn test_shrink_handle_usability() {
+        let mut heap = FibHeap::new();
+
+        // 1. Setup: Create a structure with depth
+        // Push enough items to force consolidation later
+        let _h1 = heap.push(10, "A");
+        let _h2 = heap.push(20, "B");
+        let h3 = heap.push(30, "C");
+        let h4 = heap.push(40, "D");
+
+        // 2. Create Holes. 
+        // We need to pop items that were allocated early (low indices) to force moves.
+        // FibHeap pops min. 10 is min.
+        assert_eq!(heap.pop(), Some((10, "A"))); // Pops h1. Hole at index associated with h1.
+
+        // Structure might now be consolidated (depending on degree). 
+        // Let's ensure we have a tree.
+        // Pop again to force more consolidation.
+        assert_eq!(heap.pop(), Some((20, "B"))); // Pops h2.
+
+        // Remaining: 30 and 40.
+        // Depending on consolidation logic, one might be child of other.
+
+        println!("Before shrink: {}", heap);
+        validate_heap_integrity(&heap);
+
+        // 3. Shrink
+        let map = heap.shrink_to_fit();
+
+        println!("After shrink: {}", heap);
+        validate_heap_integrity(&heap);
+
+        // 4. Update Handles
+        // h3 and h4 are the remaining ones. They likely moved.
+        let _new_h3 = map.get(&h3).copied().unwrap_or(h3);
+        let new_h4 = map.get(&h4).copied().unwrap_or(h4);
+
+        // 5. Test Usability: Decrease Key
+        // This is critical: decrease_key accesses `node.parent`. 
+        // If internal parent pointers weren't fixed, this panics or reads garbage.
+        heap.decrease_key(new_h4, 5).expect("Decrease key failed on remapped handle");
+
+        assert_eq!(heap.peek().unwrap().0, &5);
+        assert_eq!(heap.pop(), Some((5, "D")));
+        assert_eq!(heap.pop(), Some((30, "C")));
+    }
+
+    #[test]
+    fn test_shrink_structural_stress() {
+        let mut heap = FibHeap::new();
+        let mut handles = Vec::new();
+
+        // 1. Build a large, complex heap
+        for i in 0..100 {
+            handles.push(heap.push(i, i));
+        }
+
+        // 2. Perform random Pops to create fragmentation and trees
+        // Removing 40% of items randomly-ish (by popping min repeatedly)
+        for _ in 0..40 {
+            heap.pop();
+        }
+
+        // Remove handles that were popped (approximated by removing first 40)
+        // This is just for our tracking; the heap knows truth.
+        handles.drain(0..40);
+
+        let initial_len = heap.len();
+        let initial_cap = heap.pool_capacity();
+
+        validate_heap_integrity(&heap);
+
+        // 3. Shrink
+        let map = heap.shrink_to_fit();
+
+        // 4. Verify
+        assert_eq!(heap.len(), initial_len);
+        assert!(heap.pool_capacity() <= initial_cap);
+        validate_heap_integrity(&heap);
+
+        // 5. Remap our external handles and verify data access
+        for old_handle in handles {
+            let new_handle = map.get(&old_handle).copied().unwrap_or(old_handle);
+
+            // We should be able to read every remaining node
+            let node = heap.pool.data(new_handle).expect("Remapped handle points to nothing!");
+            // Basic sanity check that keys are in expected range
+            assert!(node.key >= 40 && node.key < 100);
+        }
+
+        // 6. Clean up
+        while heap.pop().is_some() {}
+    }
+
+    #[test]
+    fn test_shrink_empty_and_single() {
+        // Case 1: Empty
+        let mut heap = FibHeap::<i32, i32>::new();
+        let map = heap.shrink_to_fit();
+        assert!(map.is_empty());
+        validate_heap_integrity(&heap);
+
+        // Case 2: Single Item
+        let _h = heap.push(1, 1);
+        // Pop it to make a hole, then push new one? 
+        // Or just push, then clear... no wait.
+        // To test movement of a single item, we need a hole below it.
+        // push(1), push(2), pop(1). Heap has [2] at index 2. Hole at 1.
+        let h2 = heap.push(2, 2);
+        heap.pop(); // removes 1.
+
+        let map = heap.shrink_to_fit();
+        // h2 should have moved.
+        assert!(map.contains_key(&h2));
+        let new_h2 = map[&h2];
+
+        assert_eq!(heap.peek(), Some((&2, &2)));
+
+        // Ensure internal min pointer updated
+        assert_eq!(heap.min, new_h2);
     }
 }

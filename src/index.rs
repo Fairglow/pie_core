@@ -1,6 +1,8 @@
 //! Definition of the Index type
 
 use std::{convert::TryFrom, fmt, hash::{Hash, Hasher}, marker::PhantomData};
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// A type-safe, compact handle to an element in an `ElemPool`.
 ///
@@ -22,8 +24,12 @@ use std::{convert::TryFrom, fmt, hash::{Hash, Hasher}, marker::PhantomData};
 /// - **API Clarity:** Using `Index<T>` in function signatures makes it clear
 ///   that the function expects a handle to a list element, not just an arbitrary
 ///   number.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))] // Serialize as a raw u32, not a struct
+#[cfg_attr(feature = "serde", serde(bound = ""))]  // T does not need to be Serializable
 pub struct Index<T> {
     ndx: u32,
+    #[cfg_attr(feature = "serde", serde(skip))] // Don't serialize PhantomData
     _marker: PhantomData<T>,
 }
 

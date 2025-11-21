@@ -28,11 +28,14 @@ outdated:
 release:
     cargo build --release
 
+serde:
+    cargo test --test serde --features serde
+
 table:
     cargo build -p bench-table --release
 
 test:
-    cargo nextest run --test-threads num-cpus
+    cargo nextest run --test-threads num-cpus --features serde
 
 test-out:
     cargo nextest run --no-capture --test-threads num-cpus

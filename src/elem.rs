@@ -2,6 +2,8 @@
 
 use crate::index::Index;
 use std::{fmt, mem};
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// The fundamental node structure for a doubly-linked list.
 ///
@@ -17,6 +19,7 @@ use std::{fmt, mem};
 /// that this element is either a sentinel node for a list or is currently
 /// on the pool's free list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ListElem<T> {
     /// The index of the next element in the list.
     pub(crate) next: Index<T>,

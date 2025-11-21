@@ -7,6 +7,8 @@ use crate::index::Index;
 use crate::pool::{ElemPool, IndexError};
 use std::collections::HashMap;
 use std::marker::PhantomData;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// A handle to a doubly-linked list within a shared `ElemPool`.
 ///
@@ -33,6 +35,8 @@ use std::marker::PhantomData;
 /// [`clear()`]: PieList::clear
 /// [`drain()`]: PieList::drain
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(bound = ""))]
 pub struct PieList<T> {
     /// The index of the sentinel node for this list. The sentinel's `next`
     /// points to the head of the list, and its `prev` points to the tail.

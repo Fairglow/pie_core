@@ -34,11 +34,13 @@ categories = [
 
 [dependencies]
 # Used for the dijkstra feature
-petgraph = { version = "0.6", optional = true }
+petgraph = { version = "0.8", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 default = []
 petgraph = ["dep:petgraph"]
+serde = ["dep:serde"]
 bench-nightly = []
 
 [dev-dependencies]
@@ -48,6 +50,7 @@ index_list = "0.3"
 petgraph = "0.6"
 priority-queue = "2.7"
 rand = "0.9"
+serde_json = "1.0"
 
 [[bench]]
 name = "benches"

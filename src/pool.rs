@@ -4,6 +4,8 @@ use crate::elem::ListElem;
 use crate::Index;
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// An error type representing failures in list operations.
 ///
@@ -56,6 +58,7 @@ impl fmt::Display for IndexError {
 /// Its public API is minimal, as most interactions are performed through `PieList`,
 /// `CursorMut`, or `FibHeap` methods, which take the pool as an argument.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ElemPool<T> {
     /// The contiguous storage for all list elements (nodes).
     elems: Vec<ListElem<T>>,

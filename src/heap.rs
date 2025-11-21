@@ -5,6 +5,8 @@ use crate::list::PieList;
 use crate::pool::ElemPool;
 use std::{fmt, mem};
 use std::collections::HashMap;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// An error returned from `FibHeap::decrease_key`.
 #[derive(Debug, PartialEq, Eq)]
@@ -27,6 +29,7 @@ impl fmt::Display for DecreaseKeyError {
 ///
 /// Users of the heap cannot interact with this struct directly, but it is
 /// made public to allow the `FibHandle` type alias to be public as well.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Node<K, V> {
     key: K,
     value: V,
@@ -58,6 +61,7 @@ pub type FibHandle<K, V> = Index<Node<K, V>>;
 ///
 /// - `K`: The key type, which determines the priority of an element. Must implement `Ord`.
 /// - `V`: The value type, which is the data stored in the heap.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FibHeap<K, V> {
     /// The pool allocator that stores all nodes for this heap.
     pool: ElemPool<Node<K, V>>,
@@ -910,12 +914,12 @@ mod tests {
         let h3 = heap.push(30, "C");
         let h4 = heap.push(40, "D");
 
-        // 2. Create Holes. 
+        // 2. Create Holes.
         // We need to pop items that were allocated early (low indices) to force moves.
         // FibHeap pops min. 10 is min.
         assert_eq!(heap.pop(), Some((10, "A"))); // Pops h1. Hole at index associated with h1.
 
-        // Structure might now be consolidated (depending on degree). 
+        // Structure might now be consolidated (depending on degree).
         // Let's ensure we have a tree.
         // Pop again to force more consolidation.
         assert_eq!(heap.pop(), Some((20, "B"))); // Pops h2.
@@ -938,7 +942,7 @@ mod tests {
         let new_h4 = map.get(&h4).copied().unwrap_or(h4);
 
         // 5. Test Usability: Decrease Key
-        // This is critical: decrease_key accesses `node.parent`. 
+        // This is critical: decrease_key accesses `node.parent`.
         // If internal parent pointers weren't fixed, this panics or reads garbage.
         heap.decrease_key(new_h4, 5).expect("Decrease key failed on remapped handle");
 
@@ -1004,7 +1008,7 @@ mod tests {
 
         // Case 2: Single Item
         let _h = heap.push(1, 1);
-        // Pop it to make a hole, then push new one? 
+        // Pop it to make a hole, then push new one?
         // Or just push, then clear... no wait.
         // To test movement of a single item, we need a hole below it.
         // push(1), push(2), pop(1). Heap has [2] at index 2. Hole at 1.

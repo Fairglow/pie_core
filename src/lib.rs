@@ -81,12 +81,14 @@ mod pool;
 mod heap;
 #[cfg(feature = "petgraph")]
 mod petgraph;
+mod view;
 
 // --- Public API Re-exports ---
 pub use cursor::CursorMut;
 pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
+pub use view::PieView;
 pub use pool::{ElemPool, IndexError};
 pub use heap::{FibHeap, FibHandle, Node, DecreaseKeyError};
 #[cfg(feature = "petgraph")]

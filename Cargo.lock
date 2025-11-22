@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "pie_core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "criterion",
  "fibonacci_heap",

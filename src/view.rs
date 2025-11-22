@@ -5,12 +5,69 @@ use core::marker::PhantomData;
 use crate::index::Index;
 use crate::{ElemPool, PieList};
 
-/// A temporary view into a `PieList` that borrows the backing `ElemPool`.
+/// A lightweight, temporary view into a [`PieList`] that borrows the backing [`ElemPool`].
 ///
-/// Because `PieList` does not own its data (the `ElemPool` does), it cannot
-/// implement standard traits like `IntoIterator`, `Debug`, or `PartialEq` directly.
+/// # The Problem
+/// Because `pie_core` uses an arena allocator (`ElemPool`), a `PieList` structure only holds
+/// indices. It does not "own" the data directly. This prevents it from implementing standard
+/// Rust traits like [`IntoIterator`], [`Debug`], or [`PartialEq`], because those traits expect
+/// to access the data without asking for a second argument (the pool).
 ///
-/// `PieView` bundles the list and the pool together to enable these idiomatic behaviors.
+/// # The Solution: `PieView`
+/// `PieView` bundles the list handle and the data pool together into a single, lightweight
+/// struct. This struct implements all the standard traits you expect from a collection.
+///
+/// # Examples
+///
+/// ## Printing a List (Debug)
+/// ```rust
+/// use pie_core::{ElemPool, PieList, PieView};
+///
+/// let mut pool = ElemPool::new();
+/// let mut list = PieList::new(&mut pool);
+/// list.push_back(10, &mut pool).unwrap();
+/// list.push_back(20, &mut pool).unwrap();
+///
+/// // Standard list doesn't implement Debug:
+/// // println!("{:?}", list); // Compile Error!
+///
+/// // The View does:
+/// let view = PieView::new(&list, &pool);
+/// assert_eq!(format!("{:?}", view), "[10, 20]");
+/// ```
+///
+/// ## Iterating (for loop)
+/// ```rust
+/// # use pie_core::{ElemPool, PieList, PieView};
+/// # let mut pool = ElemPool::new();
+/// # let mut list = PieList::new(&mut pool);
+/// # list.push_back(1, &mut pool).unwrap();
+/// # list.push_back(2, &mut pool).unwrap();
+/// // Use the view in a for loop:
+/// let mut sum = 0;
+/// for &item in PieView::new(&list, &pool) {
+///     sum += item;
+/// }
+/// assert_eq!(sum, 3);
+/// ```
+///
+/// ## Comparing Lists (PartialEq)
+/// You can compare two lists for equality, even if they live in different pools,
+/// or if one is a `Vec` (via iteration comparison, though direct `PartialEq` is for `PieView` vs `PieView`).
+///
+/// ```rust
+/// # use pie_core::{ElemPool, PieList, PieView};
+/// let mut pool1 = ElemPool::new();
+/// let mut list1 = PieList::new(&mut pool1);
+/// list1.push_back("apple", &mut pool1).unwrap();
+///
+/// let mut pool2 = ElemPool::new();
+/// let mut list2 = PieList::new(&mut pool2);
+/// list2.push_back("apple", &mut pool2).unwrap();
+///
+/// // Compare views:
+/// assert_eq!(PieView::new(&list1, &pool1), PieView::new(&list2, &pool2));
+/// ```
 pub struct PieView<'a, T> {
     pub(crate) list: &'a PieList<T>,
     pub(crate) pool: &'a ElemPool<T>,
@@ -29,7 +86,16 @@ impl<'a, T> Clone for PieView<'a, T> {
 impl<'a, T> Copy for PieView<'a, T> {}
 
 impl<'a, T> PieView<'a, T> {
-    /// Creates a new view for the given list and pool.
+    /// Creates a new view for the given `list` using the data in `pool`.
+    ///
+    /// # Arguments
+    /// * `list` - A reference to the `PieList` structure (indices).
+    /// * `pool` - A reference to the `ElemPool` where the data resides.
+    ///
+    /// # Panics
+    /// This function does not panic, but using the resulting view might panic if
+    /// the `list` contains indices that are invalid for the provided `pool` (e.g.
+    /// if you mix up pools).
     pub fn new(list: &'a PieList<T>, pool: &'a ElemPool<T>) -> Self {
         Self { list, pool }
     }
@@ -40,6 +106,9 @@ impl<'a, T> PieView<'a, T> {
 // ============================================================================
 
 impl<'a, T: fmt::Debug> fmt::Debug for PieView<'a, T> {
+    /// Formats the list elements using the backing pool.
+    ///
+    /// Output format is standard list style: `[elem1, elem2, elem3]`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // We dereference *self to pass the Copy view.
         // .entries() accepts IntoIterator, so we don't need explicit .into_iter() call.
@@ -52,6 +121,10 @@ impl<'a, T: fmt::Debug> fmt::Debug for PieView<'a, T> {
 // ============================================================================
 
 impl<'a, T: PartialEq> PartialEq for PieView<'a, T> {
+    /// Checks if two lists contain the same elements in the same order.
+    ///
+    /// This performs a deep comparison of the values (`T`), not the indices.
+    /// Two lists stored in different pools are considered equal if their contents match.
     fn eq(&self, other: &Self) -> bool {
         // Optimization: If it's the exact same list indices and pool, they are equal.
         if core::ptr::eq(self.list, other.list) && core::ptr::eq(self.pool, other.pool) {
@@ -78,6 +151,7 @@ impl<'a, T: Eq> Eq for PieView<'a, T> {}
 // ============================================================================
 
 impl<'a, T: PartialOrd> PartialOrd for PieView<'a, T> {
+    /// Compares two lists lexicographically.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         let mut iter_self = (*self).into_iter();
         let mut iter_other = (*other).into_iter();
@@ -110,6 +184,7 @@ impl<'a, T> IntoIterator for PieView<'a, T> {
     type Item = &'a T;
     type IntoIter = PieViewIter<'a, T>;
 
+    /// Creates an iterator that yields references (`&'a T`) to the elements in the list.
     fn into_iter(self) -> Self::IntoIter {
         // Retrieve the sentinel node to determine where to start and stop.
         let sentinel_node = self
@@ -126,7 +201,10 @@ impl<'a, T> IntoIterator for PieView<'a, T> {
     }
 }
 
-/// An iterator over the elements of a `PieList` via a `PieView`.
+/// An iterator over the elements of a [`PieList`] via a [`PieView`].
+///
+/// This struct is created by the [`into_iter`](PieView::into_iter) method on `PieView`
+/// (or simply by using `PieView` in a `for` loop).
 pub struct PieViewIter<'a, T> {
     curr: Index<T>,
     sentinel: Index<T>,

@@ -1,6 +1,7 @@
 //! Definition of the Index type
 
-use std::{convert::TryFrom, fmt, hash::{Hash, Hasher}, marker::PhantomData};
+use core::{cmp::Ordering, convert::TryFrom, fmt, hash::{Hash, Hasher},
+           marker::PhantomData};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -29,6 +30,7 @@ use serde::{Serialize, Deserialize};
 /// 
 /// When serialized with Serde, this type serializes as a raw u32 (the
 /// transparency allows generic T to be ignored by the serializer).
+// Add PartialOrd, Ord
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))] // Serialize as a raw u32, not a struct
 #[cfg_attr(feature = "serde", serde(bound = ""))]  // T does not need to be Serializable
@@ -54,6 +56,18 @@ impl<T> fmt::Debug for Index<T> {
             u32::MAX => write!(f, "Index(-)"),
             _ => write!(f, "{:?}", self.ndx),
         }
+    }
+}
+
+impl<T> PartialOrd for Index<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for Index<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ndx.cmp(&other.ndx)
     }
 }
 

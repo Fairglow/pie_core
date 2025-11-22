@@ -1,7 +1,7 @@
 //! Definition of the generic `ListElem<T>` type.
 
 use crate::index::Index;
-use std::{fmt, mem};
+use core::{fmt, mem};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 

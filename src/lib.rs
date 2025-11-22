@@ -71,6 +71,19 @@
 //! ```
 
 #![deny(unsafe_code)]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+// We need 'alloc' to be available unconditionally because we use 
+// 'alloc::vec::Vec' in pool.rs to support both std and no_std targets.
+extern crate alloc;
+
+// Central type alias for the map used in shrink_to_fit.
+// This ensures pool, list, and heap all use the same type.
+#[cfg(feature = "std")]
+pub(crate) type IndexMap<K, V> = std::collections::HashMap<K, V>;
+
+#[cfg(not(feature = "std"))]
+pub(crate) type IndexMap<K, V> = alloc::collections::BTreeMap<K, V>;
 
 // --- Module Declarations ---
 mod cursor;

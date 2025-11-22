@@ -5,8 +5,8 @@
 use crate::cursor::CursorMut;
 use crate::index::Index;
 use crate::pool::{ElemPool, IndexError};
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use crate::IndexMap;
+use core::{cmp, marker::PhantomData, mem};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -293,7 +293,7 @@ impl<T> PieList<T> {
     /// ```
     pub fn sort<F>(&mut self, pool: &mut ElemPool<T>, mut compare: F)
     where
-        F: FnMut(&T, &T) -> std::cmp::Ordering,
+        F: FnMut(&T, &T) -> cmp::Ordering,
     {
         // This public method is a wrapper that calls the recursive helper.
         // It allows the user to pass the closure by value, which is ergonomic.
@@ -303,7 +303,7 @@ impl<T> PieList<T> {
     /// The internal recursive implementation of merge sort.
     fn sort_recursive<F>(&mut self, pool: &mut ElemPool<T>, compare: &mut F)
     where
-        F: FnMut(&T, &T) -> std::cmp::Ordering,
+        F: FnMut(&T, &T) -> cmp::Ordering,
     {
         // A list of 0 or 1 elements is already sorted.
         if self.len() < 2 {
@@ -322,7 +322,7 @@ impl<T> PieList<T> {
         left.sort_recursive(pool, compare);
         // Merge the sorted `self` (right half) into `left`, making `left` the final
         // sorted list. We use `mem::replace` to move `self` into the function call.
-        let dummy_self = std::mem::replace(self, PieList::new(pool));
+        let dummy_self = mem::replace(self, PieList::new(pool));
         left.merge(dummy_self, pool, compare);
         // Move the final sorted list from `left` back into `self`.
         *self = left;
@@ -333,7 +333,7 @@ impl<T> PieList<T> {
     /// all elements from both lists in sorted order, and `other` will be empty.
     fn merge<F>(&mut self, mut other: PieList<T>, pool: &mut ElemPool<T>, compare: &mut F)
     where
-        F: FnMut(&T, &T) -> std::cmp::Ordering,
+        F: FnMut(&T, &T) -> cmp::Ordering,
     {
         // If the other list is empty, there's nothing to do.
         if other.is_empty() {
@@ -354,7 +354,7 @@ impl<T> PieList<T> {
             let other_data = other.front(pool).unwrap();
             // If the `other` node is smaller or equal, move it into `self`.
             // The equality check is crucial for maintaining a stable sort.
-            if compare(other_data, self_data) == std::cmp::Ordering::Less {
+            if compare(other_data, self_data) == cmp::Ordering::Less {
                 let node_to_move = pool.next(other.sentinel);
                 // Unlink the node from the front of `other`.
                 pool.index_linkout(node_to_move).unwrap();
@@ -546,7 +546,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1) - It performs a single hash map lookup.
-    pub fn remap(&mut self, map: &HashMap<Index<T>, Index<T>>) {
+    pub fn remap(&mut self, map: &IndexMap<Index<T>, Index<T>>) {
         // We check if our specific sentinel index is in the map of moved nodes.
         if let Some(&new_index) = map.get(&self.sentinel) {
             self.sentinel = new_index;

@@ -3,8 +3,9 @@
 use crate::index::Index;
 use crate::list::PieList;
 use crate::pool::ElemPool;
-use std::{fmt, mem};
-use std::collections::HashMap;
+use core::{error, fmt, mem};
+use crate::IndexMap;
+use alloc::{format, string::ToString, vec, vec::Vec};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -17,7 +18,7 @@ pub enum DecreaseKeyError {
     NewKeyGreaterThanCurrent,
 }
 
-impl std::error::Error for DecreaseKeyError {}
+impl error::Error for DecreaseKeyError {}
 
 impl fmt::Display for DecreaseKeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -425,7 +426,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// indices.
     ///
     /// # Returns
-    /// A `HashMap` mapping old handles to new handles.
+    /// A `IndexMap` mapping old handles to new handles.
     ///
     /// **CRITICAL:** If you are holding any `FibHandle`s returned by `push`,
     /// you **must** update them using this map.
@@ -440,7 +441,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// // Safe way to update your handle:
     /// let new_handle = map.get(&handle).copied().unwrap_or(handle);
     /// ```
-    pub fn shrink_to_fit(&mut self) -> HashMap<FibHandle<K, V>, FibHandle<K, V>> {
+    pub fn shrink_to_fit(&mut self) -> IndexMap<FibHandle<K, V>, FibHandle<K, V>> {
         // 1. Shrink the pool. This moves nodes and fixes the Pool-level links.
         let map = self.pool.shrink_to_fit();
         // 2. Fix Heap-level pointers (roots and min)
@@ -866,7 +867,7 @@ mod tests {
     /// 1. All nodes in the pool are reachable (no orphans).
     /// 2. Parent/Child pointers are bidirectional and correct.
     /// 3. Root nodes have no parents.
-    fn validate_heap_integrity<K: Ord + std::fmt::Debug, V>(heap: &FibHeap<K, V>) {
+    fn validate_heap_integrity<K: Ord + fmt::Debug, V>(heap: &FibHeap<K, V>) {
         let mut visited = HashSet::new();
         let mut nodes_to_visit = Vec::new();
 

@@ -2,7 +2,8 @@
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use crate::{FibHeap, Index, Node};
-use std::collections::HashMap;
+use hashbrown::HashMap;
+use alloc::{vec, vec::Vec};
 
 type Handle = Index<Node<u64, NodeIndex>>;
 

@@ -33,13 +33,16 @@ categories = [
 ]
 
 [dependencies]
-# Used for the dijkstra feature
+# Used for the Dijkstra feature
+hashbrown = { version = "0.16", optional = true }
 petgraph = { version = "0.8", optional = true }
+# Used for the serde feature
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
-default = []
-petgraph = ["dep:petgraph"]
+default = ["std"]
+std = []
+petgraph = ["dep:petgraph", "dep:hashbrown"]
 serde = ["dep:serde"]
 bench-nightly = []
 
@@ -47,7 +50,7 @@ bench-nightly = []
 criterion = "0.7"
 fibonacci_heap = "0.8"
 index_list = "0.3"
-petgraph = "0.6"
+petgraph = "0.8"
 priority-queue = "2.7"
 rand = "0.9"
 serde_json = "1.0"

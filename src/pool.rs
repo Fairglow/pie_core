@@ -2,8 +2,9 @@
 
 use crate::elem::ListElem;
 use crate::Index;
-use std::collections::HashMap;
-use std::fmt;
+use crate::IndexMap;
+use alloc::{slice, vec, vec::Vec};
+use core::{error, fmt};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -27,7 +28,7 @@ pub enum IndexError {
     BrokenNextLink,
 }
 
-impl std::error::Error for IndexError {}
+impl error::Error for IndexError {}
 
 impl fmt::Display for IndexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -214,7 +215,7 @@ impl<T> ElemPool<T> {
     /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
     /// that require traversing the entire pool structure, such as remapping internal
     /// pointers after a `shrink_to_fit` operation.
-    pub fn iter(&self) -> std::slice::Iter<'_, ListElem<T>> {
+    pub fn iter(&self) -> slice::Iter<'_, ListElem<T>> {
         self.elems.iter()
     }
 
@@ -223,7 +224,7 @@ impl<T> ElemPool<T> {
     /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
     /// that require traversing the entire pool structure, such as remapping internal
     /// pointers after a `shrink_to_fit` operation.
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, ListElem<T>> {
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, ListElem<T>> {
         self.elems.iter_mut()
     }
 
@@ -368,7 +369,7 @@ impl<T> ElemPool<T> {
     ///
     /// This implementation relies on the internal free list to identify holes
     /// efficiently, avoiding a full scan of the pool's lower bounds.
-    pub fn shrink_to_fit(&mut self) -> HashMap<Index<T>, Index<T>> {
+    pub fn shrink_to_fit(&mut self) -> IndexMap<Index<T>, Index<T>> {
         let old_len = self.elems.len();
         // The target length is simply total items minus the count of free items.
         // Note: self.len() is used items, self.freed is free items.
@@ -377,7 +378,7 @@ impl<T> ElemPool<T> {
         let target_len = old_len - self.freed;
         // If we are already compact, return empty map.
         if target_len == old_len {
-            return HashMap::new();
+            return IndexMap::new();
         }
         // 1. Identify Vacancies and Tag Tail-Free items.
         // We need a way to quickly check if an item in the tail is free.
@@ -401,7 +402,7 @@ impl<T> ElemPool<T> {
             current_free = self.next(current_free);
         }
         // 2. Move Used Items from Tail to Head
-        let mut remapping = HashMap::new();
+        let mut remapping = IndexMap::new();
         // We iterate the tail region. Any item NOT marked as free is implicitly
         // a "Used" item (either User Data or a List Sentinel).
         for source in target_len..old_len {

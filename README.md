@@ -8,6 +8,7 @@ This crate provides three main types:
 
 * `ElemPool<T>`: An arena allocator that owns and manages the memory for all elements of a specific type.
 * `PieList<T>`: A lightweight handle representing a single linked list whose elements are stored in a shared `ElemPool`.
+* `PieView<'a, T>`: A temporary view that bundles a `PieList` and `ElemPool` together, providing a standard, less verbose API.
 * `FibHeap<K, V>`: A Fibonacci heap (priority queue) built on the same pool, offering an O(1) amortized `decrease_key` operation.
 
 ```rust
@@ -18,14 +19,18 @@ let mut pool = ElemPool::<i32>::new();
 
 // 2. Create list handles. They are lightweight and borrow from the pool.
 let mut list_a = PieList::new(&mut pool);
+
+// OPTION A: Verbose API (Pass pool to every method)
+// Useful when managing complex borrows or distinct lifetimes.
 list_a.push_back(10, &mut pool).unwrap();
-list_a.push_back(20, &mut pool).unwrap();
 
-let mut list_b = PieList::new(&mut pool);
-list_b.push_back(100, &mut pool).unwrap();
+// OPTION B: Simplified API (Use a PieView)
+// Useful for standard operations. The view bundles the list and pool.
+let mut view = list_a.view(&mut pool);
+view.push_back(20); // No pool argument needed!
+view.push_back(30);
 
-assert_eq!(list_a.len(), 2);
-assert_eq!(list_b.len(), 1);
+assert_eq!(list_a.len(), 3);
 assert_eq!(pool.len(), 3); // The pool tracks total items.
 ```
 
@@ -48,6 +53,7 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
   * **Efficient Priority Queues**: When you need a priority queue that supports an efficient O(1) amortized `decrease_key` operation, which is common in graph algorithms like Dijkstra's or Prim's.
   * **Managing Many Small Structures**: When you need to manage a large number of independent lists or heaps, sharing a single `ElemPool` is far more memory-efficient than having each structure handle its own allocations.
   * **Stable Indices**: The indices used by `pie_core` are stable; unlike a `Vec`, inserting or removing elements does not invalidate the indices of other elements. Only shrinking the pool invalidates some of them.
+  * Embedded and `no_std` Environments: The crate supports `no_std` (requiring `extern crate alloc`), making it ideal for bare-metal or embedded systems where the standard library is unavailable but dynamic allocation is permitted.
 
 **Important Note on `T` Size**: `pie_core` stores the data `T` (or `K` and `V` for the heap) directly inside the node structure. This design is optimized for smaller types (`Copy` types, numbers, small structs). If the data is very large, the increased size of each element can reduce the cache-locality benefits, as fewer elements will fit into a single cache line.
 
@@ -58,10 +64,11 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
   * **Performance**: Excellent cache-friendliness and minimal allocator overhead. Operations like `split_before` and `splice_before` are O(1). `FibHeap::decrease_key` is O(1) amortized.
   * **Safety**: The API is designed to prevent common iterator invalidation bugs. The cursor model ensures safe, concurrent manipulation of different lists within the same pool.
   * **Flexibility**: The multi-structure, single-pool architecture is powerful for managing complex data relationships.
+  * **Embeddable**: Can be compiled without the standard library (i.e. `no_std` support via `default-features = false`), suitable for embedded contexts.
 
 ### **Weaknesses**
 
-  * **API Verbosity**: The design requires passing a mutable reference to the `ElemPool` for every operation. This is necessary for safety but is more verbose than standard library collections.
+  * **API Verbosity**: The design requires passing a mutable reference to the `ElemPool` for every operation. This is necessary for safety but is more verbose than standard library collections. Mitigation: The `PieView` struct is provided to bundle the list and pool together, offering a standard, cleaner API for common use cases.
   * **Not a Drop-in Replacement**: Due to its unique API, `pie_core` cannot be used as a direct replacement for standard library collections without refactoring the calling code.
   * **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink automatically. The user is responsible for shrinking the pool at opportune moments, if necessary. Note: Shrinking the pool invalidates some of the existing indices; the operation returns a map translating old indices to new ones.
   * **Non-RAII Cleanup**: Unlike standard collections, dropping a PieList does not deallocate its contents. Users must manually clear lists to return memory to the pool.

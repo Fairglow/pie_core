@@ -34,6 +34,7 @@ use crate::{ElemPool, PieList};
 /// // The View does:
 /// let view = PieView::new(&list, &pool);
 /// assert_eq!(format!("{:?}", view), "[10, 20]");
+/// # list.clear(&mut pool);
 /// ```
 ///
 /// ## Iterating (for loop)
@@ -49,6 +50,7 @@ use crate::{ElemPool, PieList};
 ///     sum += item;
 /// }
 /// assert_eq!(sum, 3);
+/// # list.clear(&mut pool);
 /// ```
 ///
 /// ## Comparing Lists (PartialEq)
@@ -67,6 +69,8 @@ use crate::{ElemPool, PieList};
 ///
 /// // Compare views:
 /// assert_eq!(PieView::new(&list1, &pool1), PieView::new(&list2, &pool2));
+/// # list2.clear(&mut pool2);
+/// # list1.clear(&mut pool1);
 /// ```
 pub struct PieView<'a, T> {
     pub(crate) list: &'a PieList<T>,

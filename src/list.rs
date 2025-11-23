@@ -337,6 +337,7 @@ impl<T> PieList<T> {
     ///
     /// let sorted: Vec<_> = list.iter(&pool).copied().collect();
     /// assert_eq!(sorted, vec![1, 2, 5, 8]);
+    /// # list.clear(&mut pool);
     /// ```
     pub fn sort<F>(&mut self, pool: &mut ElemPool<T>, mut compare: F)
     where

@@ -68,6 +68,7 @@
 //! //    elements to the pool's free list for reuse.
 //! list_a.clear(&mut pool);
 //! assert_eq!(pool.len(), 2); // Only list_b's elements remain.
+//! # list_b.clear(&mut pool);
 //! ```
 
 #![deny(unsafe_code)]

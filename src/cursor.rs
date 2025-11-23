@@ -66,6 +66,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// cursor.move_next(&mut pool);
     /// assert_eq!(cursor.index(), None); // Past the end
+    /// # list.clear(&mut pool);
     /// ```
     pub fn index(&self) -> Option<usize> {
         if self.current == self.list.sentinel {
@@ -89,6 +90,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// let mut cursor = list.cursor_mut(&mut pool);
     ///
     /// assert_eq!(cursor.peek(&pool), Some(&10));
+    /// # list.clear(&mut pool);
     /// ```
     pub fn peek<'p>(&self, pool: &'p ElemPool<T>) -> Option<&'p T> {
         if self.current == self.list.sentinel {
@@ -116,6 +118,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// }
     ///
     /// assert_eq!(list.front(&pool), Some(&99));
+    /// # list.clear(&mut pool);
     /// ```
     pub fn peek_mut<'p>(&mut self, pool: &'p mut ElemPool<T>) -> Option<&'p mut T> {
         if self.current == self.list.sentinel {
@@ -197,6 +200,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// let vec: Vec<_> = list.iter(&pool).copied().collect();
     /// assert_eq!(vec, vec![10, 20, 30]);
+    /// # list.clear(&mut pool);
     /// ```
     pub fn insert_before(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
@@ -241,6 +245,7 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// let vec: Vec<_> = list.iter(&pool).copied().collect();
     /// assert_eq!(vec, vec![10, 20, 30]);
+    /// # list.clear(&mut pool);
     /// ```
     pub fn insert_after(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
@@ -284,6 +289,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// // Cursor is now at the next element (30), which is now at index 1
     /// assert_eq!(cursor.index(), Some(1));
     /// assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
+    /// # list.clear(&mut pool);
     /// ```
     pub fn remove_current(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
         if self.current == self.list.sentinel {
@@ -324,7 +330,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// # list.push_back(30, &mut pool).unwrap();
     /// # list.push_back(40, &mut pool).unwrap();
     ///
-    /// let front_list;
+    /// let mut front_list;
     /// {
     ///     // Cursor at index 2 (value 30)
     ///     let mut cursor = list.cursor_mut_at(2, &mut pool).unwrap();
@@ -344,6 +350,8 @@ impl<'a, T> CursorMut<'a, T> {
     /// // The new list contains the elements before the split point.
     /// assert_eq!(front_list.len(), 2);
     /// assert_eq!(front_list.front(&pool), Some(&10));
+    /// # front_list.clear(&mut pool);
+    /// # list.clear(&mut pool);
     /// ```
     pub fn split_before(&mut self, pool: &mut ElemPool<T>) -> Result<PieList<T>, IndexError> {
         let new_list = self.list
@@ -393,6 +401,8 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// let vec: Vec<_> = list1.iter(&pool).copied().collect();
     /// assert_eq!(vec, vec![10, 20, 30, 40]);
+    /// # list2.clear(&mut pool);
+    /// # list1.clear(&mut pool);
     /// ```
     pub fn splice_before(
         &mut self,

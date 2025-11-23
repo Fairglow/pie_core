@@ -1,8 +1,8 @@
 //! A high-performance, index-based data structure toolkit.
 //!
-//! `pie_core` (formerly `pielist`) provides data structures built on a central,
-//! contiguous `ElemPool`. This design offers several key advantages over
-//! traditional pointer-based collections:
+//! `pie_core` provides data structures built on a central, contiguous
+//! `ElemPool`. This design offers several key advantages over traditional
+//! pointer-based collections:
 //!
 //! - **Cache-Friendly:** By storing nodes in a `Vec`, traversals are significantly
 //!   faster due to improved data locality.

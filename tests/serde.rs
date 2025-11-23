@@ -23,7 +23,7 @@ fn test_pielist_roundtrip() {
     list.push_back("Gamma".to_string(), &mut pool).unwrap();
 
     // Create a struct to hold both
-    let _original_state = WorldState {
+    let mut original_state = WorldState {
         pool: pool, // Ownership moves here
         active_quests: list,
         completed_quests: compl,
@@ -39,7 +39,7 @@ fn test_pielist_roundtrip() {
     let mut l2 = PieList::new(&mut pool);
     l2.push_back("Done".to_string(), &mut pool).unwrap();
 
-    let state = WorldState {
+    let mut state = WorldState {
         pool,
         active_quests: l1,
         completed_quests: l2,
@@ -62,6 +62,13 @@ fn test_pielist_roundtrip() {
     loaded_state.active_quests.push_back("Delta".to_string(), &mut loaded_state.pool).unwrap();
     assert_eq!(loaded_state.active_quests.len(), 3);
     assert_eq!(*loaded_state.active_quests.back(&loaded_state.pool).unwrap(), "Delta");
+
+    // Since we're dropping the pools anyway, ignore the leak checks
+    original_state.active_quests.set_leak_check(false);
+    state.active_quests.set_leak_check(false);
+    state.completed_quests.set_leak_check(false);
+    loaded_state.active_quests.set_leak_check(false);
+    loaded_state.completed_quests.set_leak_check(false);
 }
 
 #[test]
@@ -131,11 +138,11 @@ fn test_shrink_before_serialize() {
     #[derive(Serialize, Deserialize)]
     struct Container { p: ElemPool<i32>, l: PieList<i32> }
 
-    let container = Container { p: pool, l: list };
+    let mut container = Container { p: pool, l: list };
     let json = serde_json::to_string(&container).unwrap();
 
     // 3. Deserialize
-    let loaded: Container = serde_json::from_str(&json).unwrap();
+    let mut loaded: Container = serde_json::from_str(&json).unwrap();
 
     // 4. Verify
     // The loaded pool should be compact (capacity roughly equals len)
@@ -143,4 +150,8 @@ fn test_shrink_before_serialize() {
 
     let vec: Vec<_> = loaded.l.iter(&loaded.p).copied().collect();
     assert_eq!(vec, vec![200, 300]);
+    
+    // Since we're dropping the pools anyway, ignore the leak checks
+    container.l.set_leak_check(false);
+    loaded.l.set_leak_check(false);
 }

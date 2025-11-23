@@ -655,6 +655,7 @@ mod tests {
         assert_eq!(pool.validate_index(i2), Err(IndexError::BrokenPrevLink));
         // i1 thinks its next is i3, but i3's prev is i2. So i1's next link is broken.
         assert_eq!(pool.validate_index(i1), Err(IndexError::BrokenNextLink));
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -692,6 +693,7 @@ mod tests {
             assert!(pool.validate_index(curr).is_ok());
             curr = pool.next(curr);
         }
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -722,6 +724,7 @@ mod tests {
         let sent_elem = pool.get(list.sentinel).unwrap();
         assert!(sent_elem.next != list.sentinel, "Sentinel should point to Data");
         assert!(sent_elem.prev != list.sentinel, "Sentinel should point to Data");
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -771,7 +774,7 @@ mod tests {
         assert_eq!(total_items_after, total_items_before);
 
         // Verify structural integrity of every list
-        for list in lists {
+        for list in lists.iter_mut() {
             let mut count = 0;
             let mut curr = pool.next(list.sentinel);
             while curr != list.sentinel {
@@ -780,6 +783,7 @@ mod tests {
                 curr = pool.next(curr);
             }
             assert_eq!(count, list.len());
+            list.clear(&mut pool);
         }
     }
 }

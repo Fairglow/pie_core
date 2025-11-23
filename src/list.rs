@@ -45,15 +45,45 @@ pub struct PieList<T> {
     pub(crate) sentinel: Index<T>,
     /// The new key is greater than the current key. `decrease_key` can only reduce values.
     pub(crate) len: usize,
+    #[cfg(debug_assertions)]
+    check_leak: bool,
 }
 
 impl<T> Clone for PieList<T> {
     #[inline]
     fn clone(&self) -> Self {
-        *self
+        PieList {
+            sentinel: self.sentinel,
+            len: self.len,
+            #[cfg(debug_assertions)]
+            check_leak: self.check_leak,
+        }
     }
 }
-impl<T> Copy for PieList<T> {}
+
+#[cfg(debug_assertions)]
+impl<T> Drop for PieList<T> {
+    fn drop(&mut self) {
+        // 1. Check if we are already panicking.
+        // If a test fails, we don't want to trigger THIS panic,
+        // as it hides the original error message.
+        #[cfg(feature = "std")]
+        if std::thread::panicking() {
+            return;
+        }
+        // 2. This is a safety check for development builds. If a `PieList` is
+        // dropped while it still contains elements, those elements will be
+        // leaked within the `ElemPool` because they are never returned to the
+        // free list. This assert helps catch such cases.
+        if self.check_leak {
+            debug_assert!(
+                self.is_empty(),
+                "PieList dropped while not empty, causing a memory leak. You must call \
+                .clear() or .drain() before the list goes out of scope."
+            );
+        }
+    }
+}
 
 impl<T> PieList<T> {
     /// Creates a new, empty list handle.
@@ -71,7 +101,17 @@ impl<T> PieList<T> {
             .index_new()
             .expect("Pool failed to allocate sentinel for new list");
         // The list is created empty, so the sentinel initially points to itself.
+        #[cfg(debug_assertions)]
+        { Self { sentinel, len: 0, check_leak: true } }
+        #[cfg(not(debug_assertions))]
         Self { sentinel, len: 0 }
+    }
+
+    #[allow(unused_mut)]
+    pub fn without_leak_check(mut self) -> Self {
+        #[cfg(debug_assertions)]
+        { self.check_leak = false; }
+        self
     }
 
     /// Returns the number of elements in the list.
@@ -204,6 +244,13 @@ impl<T> PieList<T> {
         data
     }
 
+    /// Enable/disable the leak check for this list in debug builds
+    /// 
+    /// NOTE: No leak check is performed in release builds
+    pub fn set_leak_check(&mut self, _leak_check: bool) {
+        #[cfg(debug_assertions)]
+        { self.check_leak = _leak_check; }
+    }
     /// Removes all elements from the list, returning them to the pool's free list.
     ///
     /// This is a critical method for memory management. Failure to call `clear`
@@ -751,8 +798,8 @@ mod tests {
         list.push_back(2, &mut pool).unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(pool.len(), 2);
-
         list.clear(&mut pool);
+
         assert!(list.is_empty());
         assert_eq!(pool.len(), 0); // Elements returned to the pool
     }
@@ -769,6 +816,7 @@ mod tests {
 
         assert_eq!(list.pop_front(&mut pool), Some(15));
         assert_eq!(list.pop_front(&mut pool), Some(25));
+        assert!(list.is_empty());
     }
 
     #[test]
@@ -789,6 +837,7 @@ mod tests {
         // Test collection
         let vec: Vec<_> = list.iter(&pool).copied().collect();
         assert_eq!(vec, vec![1, 2, 3]);
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -804,6 +853,7 @@ mod tests {
 
         let vec: Vec<_> = list.iter(&pool).copied().collect();
         assert_eq!(vec, vec![20, 40]);
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -886,6 +936,8 @@ mod tests {
         list2.push_back("new", &mut pool).unwrap();
         assert_eq!(list2.len(), 1);
         assert_eq!(pool.len(), 2);
+        list1.clear(&mut pool);
+        list2.clear(&mut pool);
     }
 
     #[test]
@@ -922,6 +974,7 @@ mod tests {
         list.sort(&mut pool, |a, b| b.cmp(a));
         let sorted3: Vec<_> = list.iter(&pool).copied().collect();
         assert_eq!(sorted3, vec![8, 5, 2, 1]);
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -954,5 +1007,6 @@ mod tests {
                 Item { key: 2, val: 'c' }, // 'a' before 'c'
             ]
         );
+        list.clear(&mut pool);
     }
 }

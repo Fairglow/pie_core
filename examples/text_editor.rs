@@ -219,5 +219,8 @@ fn main() {
     print_document(&document, &pool, ORIGINAL_TEXT, ADD_BUFFER);
     print_list_state(&document, &pool);
     println!("   The 'beautiful ' piece is back! The splice was a single O(1) operation.");
+
+    // No need for leak detection, now that we're dropping the pool too
+    document.set_leak_check(false);
     println!("\n--- Simulation complete ---");
 }

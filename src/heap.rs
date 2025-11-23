@@ -90,7 +90,7 @@ impl<K, V> FibHeap<K, V> {
     pub fn new() -> Self {
         let mut pool = ElemPool::new();
         // The root list needs its own sentinel, allocated from the pool.
-        let roots = PieList::new(&mut pool);
+        let roots = PieList::new(&mut pool).without_leak_check();
         Self { pool, roots, min: FibHandle::NONE, len: 0, }
     }
 
@@ -130,10 +130,8 @@ impl<K, V> FibHeap<K, V> {
     /// This is an O(n) operation, as it must deallocate all nodes
     /// within its internal pool.
     pub fn clear(&mut self) {
-        // We can't just clear the root list, as that would leak all descendant nodes.
-        // We must re-create the heap's internal state entirely.
         let mut new_pool = ElemPool::new();
-        self.roots = PieList::new(&mut new_pool);
+        self.roots = PieList::new(&mut new_pool).without_leak_check();
         self.pool = new_pool;
         self.min = FibHandle::NONE;
         self.len = 0;
@@ -165,7 +163,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     pub fn push(&mut self, key: K, value: V) -> FibHandle<K, V> {
         // Each node needs its *own* child list, which means
         // allocating a new sentinel for it.
-        let children = PieList::new(&mut self.pool);
+        let children = PieList::new(&mut self.pool).without_leak_check();
         let node = Node {
             key,
             value,
@@ -325,7 +323,7 @@ impl<K: Ord, V> FibHeap<K, V> {
 
     /// Links node `y` as a child of node `x`.
     fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
-        let mut x_children = self.pool.data_mut(x).unwrap().children;
+        let mut x_children = self.pool.data_mut(x).unwrap().children.clone();
         self.pool.index_link_after(y, x_children.sentinel).unwrap();
         x_children.len += 1;
         self.pool.data_mut(x).unwrap().children = x_children;
@@ -392,7 +390,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     fn cut(&mut self, x: FibHandle<K, V>, y: FibHandle<K, V>) {
         // 1. Unlink `x` from `y`'s child list.
         self.pool.index_linkout(x).unwrap();
-        let mut y_children = self.pool.data_mut(y).unwrap().children;
+        let mut y_children = self.pool.data_mut(y).unwrap().children.clone();
         y_children.len -= 1;
         self.pool.data_mut(y).unwrap().children = y_children;
         self.pool.data_mut(y).unwrap().degree -= 1;
@@ -564,7 +562,7 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
         // Prepare the prefix for children
         let child_prefix = format!("{}{}", prefix, if is_last { "   " } else { "│  " });
         // Recursively print children
-        let children_list = node.children;
+        let children_list = node.children.clone();
         if !children_list.is_empty() {
             let mut current_child = self.pool.next(children_list.sentinel);
             while current_child != children_list.sentinel {
@@ -694,6 +692,7 @@ mod tests {
         // but it must be less than the original 7.
         assert!(heap.roots.len < 7);
         assert_eq!(heap.peek().unwrap().0, &1);
+        heap.clear();
     }
 
     #[test]
@@ -736,6 +735,7 @@ mod tests {
         assert_eq!(heap.peek(), Some((&8, &'b')));
         assert_eq!(heap.len(), 2);
         assert_eq!(heap.roots.len, 2); // Roots should be 10 and 8
+        heap.clear();
     }
 
     #[test]
@@ -828,6 +828,7 @@ mod tests {
             h10,
             "h20 should still be a child of h10"
         );
+        heap.clear();
     }
 
     #[test]
@@ -859,6 +860,7 @@ mod tests {
         assert!(heap.is_empty());
         assert_eq!(heap.len(), 0);
         assert_eq!(heap.pop(), None);
+        heap.clear();
     }
 
     /// Validates the internal consistency of the Heap's graph structure.

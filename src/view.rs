@@ -258,6 +258,7 @@ mod tests {
         let output = format!("{:?}", view);
 
         assert_eq!(output, "[10, 20, 30]");
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -280,6 +281,7 @@ mod tests {
             sum += item;
         }
         assert_eq!(sum, 6);
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -305,6 +307,9 @@ mod tests {
 
         assert_eq!(view1, view2, "Lists with same content should be equal");
         assert_ne!(view1, view3, "Lists with different content should not be equal");
+        list3.clear(&mut pool3);
+        list2.clear(&mut pool2);
+        list1.clear(&mut pool1);
     }
 
     #[test]
@@ -322,6 +327,7 @@ mod tests {
         // because it tries to copy the view (which contains String logic implicitly).
         let output = format!("{:?}", view);
         assert_eq!(output, "[\"hello\", \"world\"]");
+        list.clear(&mut pool);
     }
 
     #[test]

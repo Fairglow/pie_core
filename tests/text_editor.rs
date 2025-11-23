@@ -134,5 +134,11 @@ fn real_world_editor_test() {
     // Verify the cut buffer is now empty
     assert!(cut_buffer.is_empty());
 
+    // --- CLEANUP ---
+    // Since we are dropping the pool immediately after this, we tell the
+    // lists to ignore the leak check.
+    file_a.set_leak_check(false);
+    file_b.set_leak_check(false);
+
     println!("--- Test Complete ---");
 }

@@ -430,6 +430,7 @@ mod tests {
 
         assert_eq!(cursor.index(), Some(0));
         assert_eq!(cursor.peek_mut(&mut pool), Some(&mut 10));
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -466,6 +467,7 @@ mod tests {
         assert_eq!(cursor2.index(), None);
         // Its logical index is 0, ready for an insert_before at the front
         assert_eq!(cursor2.logical_index, 0);
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -481,6 +483,7 @@ mod tests {
             list.cursor_mut_at(99, &mut pool),
             Err(IndexError::IndexOutOfBounds)
         ));
+        list.clear(&mut pool);
     }
 
     #[test]
@@ -500,6 +503,7 @@ mod tests {
         assert_eq!(list.pop_front(&mut pool), Some(10));
         assert_eq!(list.pop_front(&mut pool), Some(20));
         assert_eq!(list.pop_front(&mut pool), Some(30));
+        assert!(list.is_empty());
     }
 
     #[test]
@@ -518,6 +522,7 @@ mod tests {
         assert_eq!(list.pop_front(&mut pool), Some(10));
         assert_eq!(list.pop_front(&mut pool), Some(20));
         assert_eq!(list.pop_front(&mut pool), Some(30));
+        assert!(list.is_empty());
     }
 
     #[test]
@@ -534,13 +539,14 @@ mod tests {
         assert_eq!(cursor.remove_current(&mut pool), Some(30));
         assert_eq!(cursor.list.len(), 1);
         assert_eq!(cursor.index(), None);
+        list.clear(&mut pool);
     }
 
     #[test]
     fn test_split_before() {
         let mut pool = ElemPool::new();
         let mut list1 = list_with_items(&mut pool, &[1, 2, 3, 4, 5]);
-        let list2; // Declare list2 outside the scope.
+        let mut list2; // Declare list2 outside the scope.
 
         {
             let mut cursor = list1.cursor_mut_at(2, &mut pool).unwrap();
@@ -558,6 +564,8 @@ mod tests {
         assert_eq!(list1.len(), 3);
         let vec1: Vec<_> = list1.iter(&pool).copied().collect();
         assert_eq!(vec1, vec![3, 4, 5]);
+        list2.clear(&mut pool);
+        list1.clear(&mut pool);
     }
 
     #[test]
@@ -580,6 +588,7 @@ mod tests {
         // Check final state of list1
         let vec: Vec<_> = list1.iter(&pool).copied().collect();
         assert_eq!(vec, vec![10, 20, 30, 40]);
+        list1.clear(&mut pool);
     }
 
     #[test]
@@ -622,5 +631,7 @@ mod tests {
 
         let vec2: Vec<_> = list2.iter(&pool).copied().collect();
         assert_eq!(vec2, vec![250, 300]);
+        list1.clear(&mut pool);
+        list2.clear(&mut pool);
     }
 }

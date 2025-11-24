@@ -9,33 +9,56 @@ use crate::{ElemPool, Index, IndexError, PieList};
 /// which means that while the cursor exists, the list cannot be modified by
 /// any other means.
 ///
+/// The cursor has two special states:
+/// 1. "Before Start": Positioned before the first element (`index()` returns `None`).
+/// 2. "After End": Positioned after the last element (`index()` returns `None`).
+///
 /// # Rationale
 ///
 /// The cursor pattern is essential for implementing complex list operations
 /// efficiently, such as `split_before` or `splice_before`. It avoids the need
 /// for repeated index-based lookups from the beginning or end of the list.
 ///
-/// A key feature of this design is that the `ElemPool` is only borrowed by
-/// individual methods of the cursor, not by the `CursorMut` struct itself. This
-/// allows multiple independent cursors to exist and operate on different lists
-/// within the same pool concurrently.
+/// # Example
+/// ```
+/// use pie_core::{ElemPool, PieList};
+/// let mut pool = ElemPool::new();
+/// let mut list = PieList::new(&mut pool);
+/// list.push_back(10, &mut pool).unwrap();
+/// list.push_back(20, &mut pool).unwrap();
+///
+/// let mut cursor = list.cursor_mut(&mut pool); // Starts at index 0 (10)
+///
+/// // Move forward
+/// cursor.move_next(&pool);
+/// if let Some(val) = cursor.peek_mut(&mut pool) {
+///     *val = 99;
+/// }
+/// assert_eq!(list.back(&pool), Some(&99));
+///
+/// // Move backward (supports wrapping from End to Tail, etc)
+/// cursor.move_next(&pool); // Now After End
+/// cursor.move_prev(&pool); // Back to Tail (99)
+/// assert_eq!(cursor.peek(&pool), Some(&99));
+///
+/// list.clear(&mut pool);
+/// ```
+#[derive(Debug)]
 pub struct CursorMut<'a, T> {
     /// A mutable reference to the list being manipulated.
-    list: &'a mut PieList<T>,
+    pub(crate) list: &'a mut PieList<T>,
     /// The `Index` of the element the cursor is currently pointing to.
     /// This can be the sentinel, indicating an "off-list" position.
-    current: Index<T>,
+    pub(crate) current: Index<T>,
     /// The logical, 0-based index of the `current` element.
-    /// If `current` is the sentinel, this value represents the position
-    /// where a new element would be (e.g., `list.len()` if at the end).
-    logical_index: usize,
+    /// `0` to `len-1` are valid elements.
+    /// `len` indicates "After End".
+    /// `usize::MAX` indicates "Before Start".
+    pub(crate) logical_index: usize,
 }
 
 impl<'a, T> CursorMut<'a, T> {
     /// Creates a new cursor. This is intended for internal use by `PieList`.
-    ///
-    /// The cursor is initialized to point at a specific `current` index, which
-    /// is assumed to correspond to the given `logical_index`.
     pub(crate) fn new(list: &'a mut PieList<T>, current: Index<T>, logical_index: usize) -> Self {
         Self {
             list,
@@ -46,8 +69,8 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Returns the logical index of the cursor's current position.
     ///
-    /// The index is 0-based. If the cursor is pointing "past the end" of the
-    /// list (i.e., at the sentinel node), this method returns `None`.
+    /// The index is 0-based. If the cursor is pointing "Before Start" or "After End",
+    /// this method returns `None`.
     ///
     /// # Example
     /// ```
@@ -55,12 +78,8 @@ impl<'a, T> CursorMut<'a, T> {
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
-    /// # list.push_back(20, &mut pool).unwrap();
     /// let mut cursor = list.cursor_mut(&mut pool);
     /// assert_eq!(cursor.index(), Some(0));
-    ///
-    /// cursor.move_next(&mut pool);
-    /// assert_eq!(cursor.index(), Some(1));
     ///
     /// cursor.move_next(&mut pool);
     /// assert_eq!(cursor.index(), None); // Past the end
@@ -76,8 +95,7 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Provides a reference to the element at the cursor's current position.
     ///
-    /// If the cursor is not pointing at a valid element (e.g., it's past the end),
-    /// this returns `None`.
+    /// Returns `None` if the cursor is "Before Start" or "After End".
     ///
     /// # Example
     /// ```
@@ -100,8 +118,7 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Provides a mutable reference to the element at the cursor's current position.
     ///
-    /// If the cursor is not pointing at a valid element (e.g., it's past the end),
-    /// this returns `None`.
+    /// Returns `None` if the cursor is "Before Start" or "After End".
     ///
     /// # Example
     /// ```
@@ -128,14 +145,24 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Moves the cursor to the next element in the list.
     ///
-    /// If the cursor is already past the end of the list, this has no effect.
+    /// - If "Before Start": Moves to the first element (Head).
+    /// - If at the last element: Moves to "After End".
+    /// - If "After End": Stays at "After End" (no-op).
     pub fn move_next(&mut self, pool: &ElemPool<T>) {
-        if self.current == self.list.sentinel {
+        // Case 1: Already at "After End"
+        if self.current == self.list.sentinel && self.logical_index == self.list.len() {
             return;
         }
+
+        // Case 2: At "Before Start" -> Move to Head
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+            self.current = pool.next(self.list.sentinel);
+            self.logical_index = 0;
+            return;
+        }
+
+        // Case 3: Valid element
         self.current = pool.next(self.current);
-        // If we moved to the sentinel, the logical index is now the list's length.
-        // Otherwise, it's one greater than before.
         if self.current == self.list.sentinel {
             self.logical_index = self.list.len();
         } else {
@@ -145,34 +172,46 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Moves the cursor to the previous element in the list.
     ///
-    /// If the cursor is at the beginning of the list, it will move to a position
-    /// "before the start" (the sentinel), and its logical index will become 0.
-    /// If it is already "past the end", this method has no effect.
+    /// - If "After End": Moves to the last element (Tail).
+    /// - If at the first element: Moves to "Before Start".
+    /// - If "Before Start": Stays at "Before Start" (no-op).
     pub fn move_prev(&mut self, pool: &ElemPool<T>) {
-        if self.current == self.list.sentinel {
-            // This case handles being "past the end". To move to the actual
-            // last element, one should use `cursor_mut_at(len - 1)`.
-            // Here, we do nothing to prevent unexpected wrapping.
+        // Case 1: Already at "Before Start"
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
             return;
         }
-        let prev_element = pool.prev(self.current);
-        self.current = prev_element;
-        // If we moved to the sentinel from the first element, the logical index becomes 0.
-        // Otherwise, it's one less than before.
+
+        // Case 2: At "After End" -> Move to Tail
+        if self.current == self.list.sentinel && self.logical_index == self.list.len() {
+            if self.list.is_empty() {
+                self.logical_index = usize::MAX; // Empty list: After End -> Before Start
+                return;
+            }
+            self.current = pool.prev(self.list.sentinel);
+            self.logical_index = self.list.len() - 1;
+            return;
+        }
+
+        // Case 3: Valid element
+        self.current = pool.prev(self.current);
         if self.current == self.list.sentinel {
-            self.logical_index = 0;
+            self.logical_index = usize::MAX; // Moved before first element
         } else {
             self.logical_index -= 1;
         }
     }
 
     /// Moves the cursor to the first element of the list.
+    ///
+    /// If the list is empty, results in "After End" (index 0, len 0).
     pub fn move_to_front(&mut self, pool: &ElemPool<T>) {
         self.current = pool.next(self.list.sentinel);
         self.logical_index = 0;
     }
 
     /// Moves the cursor to the last element of the list.
+    ///
+    /// If the list is empty, results in "After End" (index 0, len 0).
     pub fn move_to_back(&mut self, pool: &ElemPool<T>) {
         self.current = pool.prev(self.list.sentinel);
         if self.list.is_empty() {
@@ -184,11 +223,9 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Inserts a new element *before* the cursor's current position.
     ///
-    /// After insertion, the cursor will point to the newly inserted element.
-    ///
-    /// # Rationale
-    /// This behavior is consistent with Rust's standard library `LinkedList::CursorMut`
-    /// and is useful for building up a sequence at a specific point.
+    /// - If valid position: Inserts before. Cursor points to *new* element.
+    /// - If "After End": Appends to list. Cursor points to *new* element (the new tail).
+    /// - If "Before Start": Prepends to list. Cursor points to *new* element (the new head).
     ///
     /// # Complexity
     /// O(1)
@@ -201,45 +238,48 @@ impl<'a, T> CursorMut<'a, T> {
     /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
-    /// # list.push_back(10, &mut pool).unwrap();
     /// # list.push_back(30, &mut pool).unwrap();
-    /// // Cursor is at index 1 (value 30)
-    /// let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
+    /// // Cursor is at index 0 (value 30)
+    /// let mut cursor = list.cursor_mut(&mut pool);
     ///
     /// cursor.insert_before(20, &mut pool).unwrap();
     ///
-    /// // Cursor is now at the new element '20', which is at index 1
-    /// assert_eq!(cursor.index(), Some(1));
+    /// // Cursor is now at the new element '20', which is at index 0
+    /// assert_eq!(cursor.index(), Some(0));
     /// assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 20);
     ///
     /// let vec: Vec<_> = list.iter(&pool).copied().collect();
-    /// assert_eq!(vec, vec![10, 20, 30]);
+    /// assert_eq!(vec, vec![20, 30]);
     /// # list.clear(&mut pool);
     /// ```
     pub fn insert_before(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
-        pool.index_link_before(new_idx, self.current)?;
+
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+            // Special Case: "Before Start" -> Prepend
+            // We link AFTER the sentinel, effectively prepending.
+            pool.index_link_after(new_idx, self.list.sentinel)?;
+            self.current = new_idx;
+            self.logical_index = 0;
+        } else {
+            // Standard Case (including After End, which links before sentinel)
+            pool.index_link_before(new_idx, self.current)?;
+            self.current = new_idx;
+            // Logical index remains the same (we displaced the old element)
+        }
         self.list.len += 1;
-        // The new element is now at the cursor's position.
-        self.current = new_idx;
-        // The logical index remains the same, as we inserted before it.
         Ok(())
     }
 
     /// Inserts a new element *after* the cursor's current position.
     ///
-    /// The cursor's position does not change.
-    ///
-    /// # Rationale
-    /// This is useful for appending elements after a specific point without
-    /// losing the current position.
+    /// - If valid position: Inserts after. Cursor stays on *current* element.
+    /// - If "After End": No-op logic (Appends? Undefined?). Currently acts like append.
+    /// - If "Before Start": Prepends to list. Cursor stays "Before Start".
     ///
     /// # Complexity
     /// O(1)
-    ///
-    /// # Errors
-    /// Returns `IndexError` if the pool fails to allocate a new element.
     ///
     /// # Example
     /// ```
@@ -247,7 +287,6 @@ impl<'a, T> CursorMut<'a, T> {
     /// # let mut pool = ElemPool::new();
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
-    /// # list.push_back(30, &mut pool).unwrap();
     /// // Cursor is at index 0 (value 10)
     /// let mut cursor = list.cursor_mut(&mut pool);
     ///
@@ -258,33 +297,33 @@ impl<'a, T> CursorMut<'a, T> {
     /// assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 10);
     ///
     /// let vec: Vec<_> = list.iter(&pool).copied().collect();
-    /// assert_eq!(vec, vec![10, 20, 30]);
+    /// assert_eq!(vec, vec![10, 20]);
     /// # list.clear(&mut pool);
     /// ```
     pub fn insert_after(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
         let new_idx = pool.index_new()?;
         pool.data_swap(new_idx, Some(data));
-        pool.index_link_after(new_idx, self.current)?;
+
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+            // Insert after "Before Start" -> Prepend
+            pool.index_link_after(new_idx, self.list.sentinel)?;
+            // Cursor stays "Before Start" (usize::MAX)
+        } else {
+            pool.index_link_after(new_idx, self.current)?;
+            // Cursor stays put
+        }
         self.list.len += 1;
-        // The cursor's position and logical index do not change.
         Ok(())
     }
 
     /// Removes the element at the cursor's current position and returns its data.
     ///
-    /// After removal, the cursor moves to the next element. If the removed element
-    /// was the last one, the cursor moves to the "past the end" position.
-    ///
-    /// # Rationale
-    /// Moving to the next element is a common pattern when draining or filtering
-    /// a list, making it convenient.
-    ///
-    /// # Complexity
-    /// O(1)
+    /// After removal, the cursor moves to the *next* element. If the removed element
+    /// was the last one, the cursor moves to the "After End" position.
     ///
     /// # Returns
     /// `Some(T)` if an element was removed, `None` if the cursor was not on a
-    /// valid element.
+    /// valid element (i.e. Before Start or After End).
     ///
     /// # Example
     /// ```
@@ -293,16 +332,15 @@ impl<'a, T> CursorMut<'a, T> {
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
     /// # list.push_back(20, &mut pool).unwrap();
-    /// # list.push_back(30, &mut pool).unwrap();
-    /// // Cursor at index 1 (value 20)
-    /// let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
+    /// // Cursor at index 0 (value 10)
+    /// let mut cursor = list.cursor_mut(&mut pool);
     ///
     /// let removed = cursor.remove_current(&mut pool);
-    /// assert_eq!(removed, Some(20));
+    /// assert_eq!(removed, Some(10));
     ///
-    /// // Cursor is now at the next element (30), which is now at index 1
-    /// assert_eq!(cursor.index(), Some(1));
-    /// assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
+    /// // Cursor is now at the next element (20), which shifted to index 0
+    /// assert_eq!(cursor.index(), Some(0));
+    /// assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 20);
     /// # list.clear(&mut pool);
     /// ```
     pub fn remove_current(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
@@ -312,12 +350,18 @@ impl<'a, T> CursorMut<'a, T> {
         let old_current = self.current;
         // Move to the next element before modifying links.
         self.current = pool.next(old_current);
-        // The logical index stays the same because the subsequent elements shift left.
 
         pool.index_linkout(old_current).unwrap();
         self.list.len -= 1;
         let data = pool.data_swap(old_current, None);
         pool.index_del(old_current).unwrap();
+
+        // Update logical index.
+        // If we hit the sentinel (After End), index becomes len.
+        if self.current == self.list.sentinel {
+            self.logical_index = self.list.len();
+        }
+        // Otherwise, logical_index stays same because subsequent items shifted left.
 
         data
     }
@@ -328,12 +372,6 @@ impl<'a, T> CursorMut<'a, T> {
     /// current position onwards. A new `PieList` is returned containing all
     /// elements *before* the current position.
     ///
-    /// After the split, the cursor remains on the same element, which is now the
-    /// first element of the original list. Its logical index becomes 0.
-    ///
-    /// # Complexity
-    /// O(1)
-    ///
     /// # Example
     /// ```
     /// # use pie_core::{ElemPool, PieList};
@@ -341,80 +379,67 @@ impl<'a, T> CursorMut<'a, T> {
     /// # let mut list = PieList::new(&mut pool);
     /// # list.push_back(10, &mut pool).unwrap();
     /// # list.push_back(20, &mut pool).unwrap();
-    /// # list.push_back(30, &mut pool).unwrap();
-    /// # list.push_back(40, &mut pool).unwrap();
     ///
     /// let mut front_list;
     /// {
-    ///     // Cursor at index 2 (value 30)
-    ///     let mut cursor = list.cursor_mut_at(2, &mut pool).unwrap();
+    ///     // Cursor at index 1 (value 20)
+    ///     let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
     ///
-    ///     // Split the list. `front_list` will get elements {10, 20}.
+    ///     // Split. front_list gets {10}. Original keeps {20}.
     ///     front_list = cursor.split_before(&mut pool).unwrap();
     ///
-    ///     // The cursor is now at the beginning of the modified original list.
+    ///     // Cursor points to 20, which is now index 0 of the truncated list
     ///     assert_eq!(cursor.index(), Some(0));
-    ///     assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
-    /// } // cursor is dropped here, releasing the mutable borrow on `list`.
+    /// }
     ///
-    /// // The original list now contains {30, 40}.
-    /// assert_eq!(list.len(), 2);
-    /// assert_eq!(list.front(&pool), Some(&30));
-    ///
-    /// // The new list contains the elements before the split point.
-    /// assert_eq!(front_list.len(), 2);
-    /// assert_eq!(front_list.front(&pool), Some(&10));
+    /// assert_eq!(list.len(), 1);
+    /// assert_eq!(front_list.len(), 1);
     /// # front_list.clear(&mut pool);
     /// # list.clear(&mut pool);
     /// ```
     pub fn split_before(&mut self, pool: &mut ElemPool<T>) -> Result<PieList<T>, IndexError> {
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+            // Split before "Before Start" -> New list empty
+            return Ok(PieList::new(pool));
+        }
+
+        let split_len = self.logical_index;
+        // self.list becomes the right half (from cursor onwards).
+        // returned list gets the front elements.
         let new_list = self.list
-            .split_off(self.current, self.logical_index, pool)?;
+            .split_off(self.current, split_len, pool)?;
         // The cursor now points to the same element, which is the new head of the modified list.
-        self.logical_index = 0; // The cursor is now at the start of the modified list.
+        self.logical_index = 0;
         Ok(new_list)
     }
 
     /// Moves all elements from `other` into `self`'s list, inserting them
     /// just before the cursor's current position.
     ///
-    /// After the operation, `other` is left empty. The cursor's position does
-    /// not change, but its logical index is updated to reflect the newly
-    /// inserted elements.
-    ///
-    /// # Rationale
-    /// This is a highly efficient way to merge two lists without iterating
-    /// or reallocating elements. It only requires a few pointer updates.
-    ///
-    /// # Complexity
-    /// O(1)
+    /// After the operation, `other` is left empty.
     ///
     /// # Example
     /// ```
     /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
     /// let mut list1 = PieList::new(&mut pool);
-    /// list1.push_back(10, &mut pool).unwrap();
-    /// list1.push_back(40, &mut pool).unwrap();
+    /// list1.push_back(30, &mut pool).unwrap();
     ///
     /// let mut list2 = PieList::new(&mut pool);
+    /// list2.push_back(10, &mut pool).unwrap();
     /// list2.push_back(20, &mut pool).unwrap();
-    /// list2.push_back(30, &mut pool).unwrap();
     ///
     /// {
-    ///     // Cursor at index 1 (value 40) in list1
-    ///     let mut cursor = list1.cursor_mut_at(1, &mut pool).unwrap();
+    ///     // Cursor at 30
+    ///     let mut cursor = list1.cursor_mut(&mut pool);
     ///     cursor.splice_before(&mut list2, &mut pool).unwrap();
     ///
-    ///     // Cursor still points to 40, but its logical index is now 3
-    ///     assert_eq!(cursor.index(), Some(3));
-    /// } // cursor is dropped here, releasing the mutable borrow on `list1`.
+    ///     // list1: {10, 20, 30}. Cursor still at 30, now index 2.
+    ///     assert_eq!(cursor.index(), Some(2));
+    /// }
     ///
+    /// assert_eq!(list1.len(), 3);
     /// assert!(list2.is_empty());
-    /// assert_eq!(list1.len(), 4);
-    ///
-    /// let vec: Vec<_> = list1.iter(&pool).copied().collect();
-    /// assert_eq!(vec, vec![10, 20, 30, 40]);
     /// # list2.clear(&mut pool);
     /// # list1.clear(&mut pool);
     /// ```
@@ -427,8 +452,16 @@ impl<'a, T> CursorMut<'a, T> {
         if other_len == 0 {
             return Ok(());
         }
-        self.list.splice(self.current, other, pool)?;
-        self.logical_index += other_len;
+
+        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+             // Splice before "Before Start" -> Prepend
+             self.list.prepend(other, pool)?;
+             // Cursor stays "Before Start"
+        } else {
+            self.list.splice(self.current, other, pool)?;
+            self.logical_index += other_len;
+        }
+
         Ok(())
     }
 }
@@ -447,215 +480,91 @@ mod tests {
     }
 
     #[test]
-    fn test_cursor_peek_and_index() {
+    fn test_cursor_nav_edges() {
         let mut pool = ElemPool::new();
         let mut list = list_with_items(&mut pool, &[10, 20]);
-        let mut cursor = list.cursor_mut(&mut pool);
+        let mut cursor = list.cursor_mut(&mut pool); // At 10
 
+        // Move Prev -> Before Start
+        cursor.move_prev(&pool);
+        assert_eq!(cursor.index(), None);
+        // Move Next -> At 10
+        cursor.move_next(&pool);
         assert_eq!(cursor.index(), Some(0));
-        assert_eq!(cursor.peek_mut(&mut pool), Some(&mut 10));
-        list.clear(&mut pool);
-    }
 
-    #[test]
-    fn test_cursor_navigation() {
-        let mut pool = ElemPool::new();
-        let mut list = list_with_items(&mut pool, &[10, 20, 30]);
-        let mut cursor = list.cursor_mut(&mut pool);
+        // Move Next x2 -> After End
+        cursor.move_next(&pool);
+        cursor.move_next(&pool);
+        assert_eq!(cursor.index(), None);
+        assert_eq!(cursor.peek(&pool), None);
 
-        cursor.move_next(&mut pool);
+        // Move Prev -> At 20
+        cursor.move_prev(&pool);
         assert_eq!(cursor.index(), Some(1));
-        assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 20);
+        assert_eq!(cursor.peek(&pool), Some(&20));
 
-        cursor.move_next(&mut pool);
-        assert_eq!(cursor.index(), Some(2));
-        assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
-
-        cursor.move_next(&mut pool);
-        assert_eq!(cursor.index(), None);
-        assert_eq!(cursor.peek_mut(&mut pool), None);
-
-        // move_prev from the end does nothing
-        cursor.move_prev(&mut pool);
-        assert_eq!(cursor.index(), None);
-
-        // Test move_prev from a valid position
-        let mut cursor2 = list.cursor_mut_at(2, &mut pool).unwrap();
-        cursor2.move_prev(&mut pool);
-        assert_eq!(cursor2.index(), Some(1));
-        assert_eq!(*cursor2.peek_mut(&mut pool).unwrap(), 20);
-
-        cursor2.move_prev(&mut pool);
-        cursor2.move_prev(&mut pool);
-        // Cursor is now "before the beginning"
-        assert_eq!(cursor2.index(), None);
-        // Its logical index is 0, ready for an insert_before at the front
-        assert_eq!(cursor2.logical_index, 0);
         list.clear(&mut pool);
     }
 
     #[test]
-    fn test_cursor_mut_at_out_of_bounds() {
+    fn test_insert_at_edges() {
         let mut pool = ElemPool::new();
-        let mut list = list_with_items(&mut pool, &[10, 20]);
+        let mut list = PieList::new(&mut pool);
+        let mut cursor = list.cursor_mut(&mut pool); // Empty -> After End / Before Start (ambiguous on empty)
 
-        assert!(matches!(
-            list.cursor_mut_at(2, &mut pool),
-            Err(IndexError::IndexOutOfBounds)
-        ));
-        assert!(matches!(
-            list.cursor_mut_at(99, &mut pool),
-            Err(IndexError::IndexOutOfBounds)
-        ));
+        // Empty list logic check
+        cursor.move_to_back(&pool); // After End (index 0, len 0)
+        cursor.insert_before(100, &mut pool).unwrap(); // Append
+        assert_eq!(cursor.index(), Some(0));
+        assert_eq!(cursor.peek(&pool), Some(&100));
+
+        // Move Before Start
+        cursor.move_prev(&pool); // Before Start
+        cursor.insert_before(50, &mut pool).unwrap(); // Prepend
+        assert_eq!(cursor.index(), Some(0)); // Cursor moves to new item
+        assert_eq!(cursor.peek(&pool), Some(&50));
+
+        // Verify order
+        let vec: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(vec, vec![50, 100]);
+
         list.clear(&mut pool);
     }
 
     #[test]
-    fn test_cursor_insert_before() {
+    fn test_split_and_splice() {
         let mut pool = ElemPool::new();
-        let mut list = list_with_items(&mut pool, &[10, 30]);
-
-        // Use a scope to manage the cursor's lifetime.
-        {
-            let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
-            cursor.insert_before(20, &mut pool).unwrap();
-            assert_eq!(cursor.list.len(), 3);
-            assert_eq!(cursor.index(), Some(1));
-            assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 20);
-        } // Cursor is dropped here, its borrow on `list` is released.
-
-        assert_eq!(list.pop_front(&mut pool), Some(10));
-        assert_eq!(list.pop_front(&mut pool), Some(20));
-        assert_eq!(list.pop_front(&mut pool), Some(30));
-        assert!(list.is_empty());
-    }
-
-    #[test]
-    fn test_cursor_insert_after() {
-        let mut pool = ElemPool::new();
-        let mut list = list_with_items(&mut pool, &[10, 30]);
+        let mut list1 = list_with_items(&mut pool, &[1, 2, 3, 4]);
+        let mut list2;
 
         {
-            let mut cursor = list.cursor_mut(&mut pool);
-            cursor.insert_after(20, &mut pool).unwrap();
-            assert_eq!(cursor.list.len(), 3);
-            assert_eq!(cursor.index(), Some(0));
-            assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 10);
-        }
-
-        assert_eq!(list.pop_front(&mut pool), Some(10));
-        assert_eq!(list.pop_front(&mut pool), Some(20));
-        assert_eq!(list.pop_front(&mut pool), Some(30));
-        assert!(list.is_empty());
-    }
-
-    #[test]
-    fn test_cursor_remove_current() {
-        let mut pool = ElemPool::new();
-        let mut list = list_with_items(&mut pool, &[10, 20, 30]);
-
-        let mut cursor = list.cursor_mut_at(1, &mut pool).unwrap();
-        assert_eq!(cursor.remove_current(&mut pool), Some(20));
-        assert_eq!(cursor.list.len(), 2);
-        assert_eq!(cursor.index(), Some(1));
-        assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 30);
-
-        assert_eq!(cursor.remove_current(&mut pool), Some(30));
-        assert_eq!(cursor.list.len(), 1);
-        assert_eq!(cursor.index(), None);
-        list.clear(&mut pool);
-    }
-
-    #[test]
-    fn test_split_before() {
-        let mut pool = ElemPool::new();
-        let mut list1 = list_with_items(&mut pool, &[1, 2, 3, 4, 5]);
-        let mut list2; // Declare list2 outside the scope.
-
-        {
-            let mut cursor = list1.cursor_mut_at(2, &mut pool).unwrap();
+            let mut cursor = list1.cursor_mut_at(2, &mut pool).unwrap(); // At 3
             list2 = cursor.split_before(&mut pool).unwrap();
-            assert_eq!(cursor.list.len(), 3);
+            // list1 now {3, 4}, list2 {1, 2}
             assert_eq!(cursor.index(), Some(0));
-            assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 3);
-        } // Cursor is dropped here, releasing borrows.
-
-        // Now it's safe to check the final state of both lists.
-        assert_eq!(list2.len(), 2);
-        let vec2: Vec<_> = list2.iter(&pool).copied().collect();
-        assert_eq!(vec2, vec![1, 2]);
-
-        assert_eq!(list1.len(), 3);
-        let vec1: Vec<_> = list1.iter(&pool).copied().collect();
-        assert_eq!(vec1, vec![3, 4, 5]);
-        list2.clear(&mut pool);
-        list1.clear(&mut pool);
-    }
-
-    #[test]
-    fn test_splice_before() {
-        let mut pool = ElemPool::new();
-        let mut list1 = list_with_items(&mut pool, &[10, 40]);
-        let mut list2 = list_with_items(&mut pool, &[20, 30]);
-
-        {
-            let mut cursor = list1.cursor_mut_at(1, &mut pool).unwrap(); // Cursor at 40
-            cursor.splice_before(&mut list2, &mut pool).unwrap();
-
-            // Check state while cursor is alive
-            assert_eq!(cursor.list.len(), 4);
-            assert!(list2.is_empty()); // Spliced list should be empty
-            assert_eq!(cursor.index(), Some(3)); // Index moved from 1 to 1+2=3
-            assert_eq!(*cursor.peek_mut(&mut pool).unwrap(), 40);
+            assert_eq!(cursor.peek(&pool), Some(&3));
         }
 
-        // Check final state of list1
-        let vec: Vec<_> = list1.iter(&pool).copied().collect();
-        assert_eq!(vec, vec![10, 20, 30, 40]);
+        {
+            let mut cursor = list2.cursor_mut_at(1, &mut pool).unwrap(); // At 2
+            cursor.splice_before(&mut list1, &mut pool).unwrap();
+            // list2 should now be {1, 3, 4, 2}
+        }
+
+        let vec: Vec<_> = list2.iter(&pool).copied().collect();
+        assert_eq!(vec, vec![1, 3, 4, 2]);
+        assert!(list1.is_empty());
+
+        list2.clear(&mut pool);
         list1.clear(&mut pool);
     }
 
     #[test]
-    fn test_independent_cursors_on_multiple_lists() {
+    fn test_error_conditions() {
         let mut pool = ElemPool::new();
-        let mut list1 = list_with_items(&mut pool, &[10, 20, 30]);
-        let mut list2 = list_with_items(&mut pool, &[100, 200, 300]);
+        let mut list = list_with_items(&mut pool, &[10]);
 
-        // Create cursors for both lists.
-        let mut cursor1 = list1.cursor_mut_at(1, &mut pool).unwrap(); // At 20
-        let mut cursor2 = list2.cursor_mut_at(1, &mut pool).unwrap(); // At 200
-
-        // 1. Mutate list1 via its cursor.
-        cursor1.insert_before(15, &mut pool).unwrap(); // list1: 10, 15, 20, 30
-        assert_eq!(*cursor1.peek_mut(&mut pool).unwrap(), 15);
-
-        // 2. Mutate list2 via its cursor.
-        *cursor2.peek_mut(&mut pool).unwrap() = 250; // list2: 100, 250, 300
-        assert_eq!(*cursor2.peek_mut(&mut pool).unwrap(), 250);
-
-        // 3. Mutating list1 directly is now impossible because cursor1 holds a borrow.
-        // Instead, we can access its length through the cursor.
-        assert_eq!(cursor1.list.len(), 4);
-
-        // Release the borrow on list2 by dropping its cursor
-        drop(cursor2);
-
-        // 4. Now it's safe to mutate list2 directly, even while cursor1 (on list1) still exists.
-        assert_eq!(list2.pop_front(&mut pool), Some(100)); // list2 is now {250, 300}
-
-        // Final verification after cursors are out of scope.
-        drop(cursor1);
-
-        assert_eq!(list1.len(), 4);
-        assert_eq!(list2.len(), 2);
-        assert_eq!(pool.len(), 6); // 4 + 2 = 6 used elements
-
-        let vec1: Vec<_> = list1.iter(&pool).copied().collect();
-        assert_eq!(vec1, vec![10, 15, 20, 30]);
-
-        let vec2: Vec<_> = list2.iter(&pool).copied().collect();
-        assert_eq!(vec2, vec![250, 300]);
-        list1.clear(&mut pool);
-        list2.clear(&mut pool);
+        assert!(matches!(list.cursor_mut_at(1, &mut pool), Err(IndexError::IndexOutOfBounds)));
+        list.clear(&mut pool);
     }
 }

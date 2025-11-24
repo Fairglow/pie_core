@@ -77,6 +77,7 @@
 // We need 'alloc' to be available unconditionally because we use 
 // 'alloc::vec::Vec' in pool.rs to support both std and no_std targets.
 extern crate alloc;
+extern crate core;
 
 // Central type alias for the map used in shrink_to_fit.
 // This ensures pool, list, and heap all use the same type.
@@ -88,6 +89,7 @@ pub(crate) type IndexMap<K, V> = alloc::collections::BTreeMap<K, V>;
 
 // --- Module Declarations ---
 mod cursor;
+mod cursor_mut;
 mod elem;
 mod index;
 mod list;
@@ -96,13 +98,16 @@ mod heap;
 #[cfg(feature = "petgraph")]
 mod petgraph;
 mod view;
+mod view_mut;
 
 // --- Public API Re-exports ---
-pub use cursor::CursorMut;
+pub use cursor::Cursor;
+pub use cursor_mut::CursorMut;
 pub use elem::ListElem;
 pub use index::Index;
 pub use list::PieList;
 pub use view::PieView;
+pub use view_mut::PieViewMut;
 pub use pool::{ElemPool, IndexError};
 pub use heap::{FibHeap, FibHandle, Node, DecreaseKeyError};
 #[cfg(feature = "petgraph")]

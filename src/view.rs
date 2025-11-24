@@ -1,9 +1,10 @@
+//! Immutable view implementation.
+
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
-
-use crate::index::Index;
-use crate::{ElemPool, PieList};
+use crate::list::Iter;
+use crate::{ElemPool, Index, PieList};
 
 /// A lightweight, temporary view into a [`PieList`] that borrows the backing [`ElemPool`].
 ///
@@ -102,6 +103,36 @@ impl<'a, T> PieView<'a, T> {
     /// if you mix up pools).
     pub fn new(list: &'a PieList<T>, pool: &'a ElemPool<T>) -> Self {
         Self { list, pool }
+    }
+
+    /// Returns the number of elements in the list.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// Returns `true` if the list is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    /// Returns a reference to the front element.
+    #[inline]
+    pub fn front(&self) -> Option<&T> {
+        self.list.front(self.pool)
+    }
+
+    /// Returns a reference to the back element.
+    #[inline]
+    pub fn back(&self) -> Option<&T> {
+        self.list.back(self.pool)
+    }
+
+    /// Creates an iterator over the list's elements.
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.list.iter(self.pool)
     }
 }
 

@@ -1,10 +1,8 @@
 //! A Fibonacci heap implementation, built on the `ElemPool` and `PieList`.
 
-use crate::index::Index;
-use crate::list::PieList;
-use crate::pool::ElemPool;
-use core::{error, fmt, mem};
+use crate::{ElemPool, Index, PieList};
 use crate::IndexMap;
+use core::{error, fmt, mem};
 use alloc::{format, string::ToString, vec, vec::Vec};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};

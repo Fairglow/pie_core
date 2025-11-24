@@ -2,10 +2,8 @@
 // Allow unsafe for the performance-critical iterator implementation.
 #![allow(unsafe_code)]
 
-use crate::cursor::CursorMut;
-use crate::index::Index;
-use crate::pool::{ElemPool, IndexError};
-use crate::IndexMap;
+use crate::{Cursor, CursorMut, ElemPool, Index, IndexError, IndexMap,
+            PieView, PieViewMut};
 use core::{cmp, marker::PhantomData, mem};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
@@ -541,6 +539,60 @@ impl<T> PieList<T> {
             len: self.len,
             _phantom: PhantomData,
         }
+    }
+
+    /// Creates an immutable view of the list using the provided pool.
+    ///
+    /// The view bundles the list and pool together, offering a simplified API
+    /// for read-only operations.
+    pub fn view<'a>(&'a self, pool: &'a ElemPool<T>) -> PieView<'a, T> {
+        PieView::new(self, pool)
+    }
+
+    /// Creates a mutable view of the list using the provided pool.
+    ///
+    /// The view bundles the list and pool together, offering a simplified API
+    /// for mutable operations (push, pop, etc.).
+    pub fn view_mut<'a>(&'a mut self, pool: &'a mut ElemPool<T>) -> PieViewMut<'a, T> {
+        PieViewMut::new(self, pool)
+    }
+
+    /// Returns a cursor pointing to the first element of the list.
+    ///
+    /// The cursor allows for bidirectional navigation.
+    pub fn cursor<'a>(&'a self, pool: &'a ElemPool<T>) -> Cursor<'a, T> {
+        let first_elem = pool.next(self.sentinel);
+        Cursor::new(self, first_elem, 0)
+    }
+
+    /// Returns a cursor pointing to the element at the given logical index.
+    ///
+    /// # Complexity
+    /// O(min(k, n-k)) traversal.
+    ///
+    /// # Errors
+    /// Returns `Err(IndexError::IndexOutOfBounds)` if `index >= self.len()`.
+    pub fn cursor_at<'a>(
+        &'a self,
+        index: usize,
+        pool: &'a ElemPool<T>,
+    ) -> Result<Cursor<'a, T>, IndexError> {
+        if index >= self.len {
+            return Err(IndexError::IndexOutOfBounds);
+        }
+        let mut current_idx;
+        if index < self.len / 2 {
+            current_idx = self.sentinel;
+            for _ in 0..=index {
+                current_idx = pool.next(current_idx);
+            }
+        } else {
+            current_idx = self.sentinel;
+            for _ in 0..(self.len - index) {
+                current_idx = pool.prev(current_idx);
+            }
+        }
+        Ok(Cursor::new(self, current_idx, index))
     }
 
     /// Returns a mutable cursor pointing to the first element of the list.

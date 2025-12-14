@@ -21,8 +21,7 @@ use crate::{ElemPool, Index, PieList};
 ///
 /// let mut cursor = list.cursor(&pool);
 ///
-/// // Move to first element
-/// cursor.move_next(&pool);
+/// // Starts at first element (10)
 /// assert_eq!(cursor.peek(&pool), Some(&10));
 ///
 /// // Move to next

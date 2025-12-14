@@ -341,7 +341,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// The design is optimized for decreasing the key at the expense of the
     /// efficiency of increasing them. Therefore, use-case where keys increase
     /// are not suitable for this implementation.
-    /// 
+    ///
     /// # Complexity
     ///
     /// O(1) amortized time.
@@ -450,7 +450,10 @@ impl<K: Ord, V> FibHeap<K, V> {
         // about the `parent` or `children` fields inside our `Node` struct.
         // We must traverse the pool and update them manually.
         for elem in self.pool.iter_mut() {
-            if let Some(node) = &mut elem.data {
+            if elem.is_used() {
+                // SAFETY: We just checked is_used()
+                #[allow(unsafe_code)]
+                let node = unsafe { elem.data.assume_init_mut() };
                 // Fix parent pointer
                 if let Some(new_parent) = map.get(&node.parent) {
                     node.parent = *new_parent;

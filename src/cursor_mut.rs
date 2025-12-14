@@ -34,7 +34,7 @@ use crate::{ElemPool, Index, IndexError, PieList};
 /// if let Some(val) = cursor.peek_mut(&mut pool) {
 ///     *val = 99;
 /// }
-/// assert_eq!(list.back(&pool), Some(&99));
+/// assert_eq!(cursor.peek(&pool), Some(&99));
 ///
 /// // Move backward (supports wrapping from End to Tail, etc)
 /// cursor.move_next(&pool); // Now After End
@@ -253,8 +253,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// # list.clear(&mut pool);
     /// ```
     pub fn insert_before(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
-        let new_idx = pool.index_new()?;
-        pool.data_swap(new_idx, Some(data));
+        let new_idx = pool.index_new_with_data(data)?;
 
         if self.current == self.list.sentinel && self.logical_index == usize::MAX {
             // Special Case: "Before Start" -> Prepend
@@ -301,8 +300,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// # list.clear(&mut pool);
     /// ```
     pub fn insert_after(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<(), IndexError> {
-        let new_idx = pool.index_new()?;
-        pool.data_swap(new_idx, Some(data));
+        let new_idx = pool.index_new_with_data(data)?;
 
         if self.current == self.list.sentinel && self.logical_index == usize::MAX {
             // Insert after "Before Start" -> Prepend

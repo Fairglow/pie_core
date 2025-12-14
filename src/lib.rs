@@ -103,7 +103,7 @@ mod view_mut;
 // --- Public API Re-exports ---
 pub use cursor::Cursor;
 pub use cursor_mut::CursorMut;
-pub use elem::ListElem;
+pub use elem::Elem;
 pub use index::Index;
 pub use list::PieList;
 pub use view::PieView;

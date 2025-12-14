@@ -1,4 +1,3 @@
-#![cfg(feature = "petgraph")]
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use crate::{FibHeap, Index, Node};
@@ -15,7 +14,7 @@ pub fn dijkstra_pie_core(
 ) -> HashMap<NodeIndex, u64> {
     // 1. Initialization
     let node_count = graph.node_count();
-    let mut heap = FibHeap::new();    
+    let mut heap = FibHeap::new();
     let mut distances = vec![u64::MAX; node_count];
     let mut pq_handles: Vec<Option<Handle>> = vec![None; node_count];
     distances[start.index()] = 0;

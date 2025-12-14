@@ -97,7 +97,7 @@ impl<'a, T> PieView<'a, T> {
     /// ```
     /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
-    /// # let mut list = PieList::new(&mut pool);
+    /// # let mut list = PieList::<i32>::new(&mut pool);
     /// let view = list.view(&pool);
     /// assert_eq!(view.len(), 0);
     /// # list.clear(&mut pool);
@@ -113,7 +113,7 @@ impl<'a, T> PieView<'a, T> {
     /// ```
     /// # use pie_core::{ElemPool, PieList};
     /// # let mut pool = ElemPool::new();
-    /// # let mut list = PieList::new(&mut pool);
+    /// # let mut list = PieList::<i32>::new(&mut pool);
     /// let view = list.view(&pool);
     /// assert!(view.is_empty());
     /// # list.clear(&mut pool);

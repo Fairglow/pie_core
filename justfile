@@ -22,6 +22,9 @@ examples:
     cargo build --examples --release
     cargo build -p dijkstra --release
 
+gemini:
+    npx @google/gemini-cli
+
 outdated:
     cargo outdated --depth=1
 

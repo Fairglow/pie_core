@@ -1,59 +1,108 @@
 //! Definition of the generic `ListElem<T>` type.
 
 use crate::index::Index;
-use core::{fmt, mem};
-#[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use core::{fmt, mem::{self, MaybeUninit}};
+
+// --- Bitwise State Management ---
+// Layout: [ ... Generation (30 bits) ... | State (2 bits) ]
+pub(crate) const STATE_MASK: u32 = 0b11;
+pub(crate) const STATE_FREE: u32 = 0b00;     // 0
+pub(crate) const STATE_USED: u32 = 0b01;     // 1
+pub(crate) const STATE_SENTINEL: u32 = 0b10; // 2
+pub(crate) const STATE_ZOMBIE: u32 = 0b11;   // 3 (Used but data taken)
+const GEN_INCREMENT: u32 = 0b100; // Adds 1 to the generation part
 
 /// The fundamental node structure for a doubly-linked list.
-///
-/// Each `ListElem` contains optional data and indices pointing to the
-/// `next` and `prev` elements in its list. This struct is the unit of
-/// allocation within the `ElemPool`.
-///
-/// # Rationale
-///
-/// By embedding `Option<T>` directly, we colocate the list's structural
-/// information with the user's data. This improves cache performance for
-/// lists where `T` is reasonably small. A `data` value of `None` signifies
-/// that this element is either a sentinel node for a list or is currently
-/// on the pool's free list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ListElem<T> {
-    /// The index of the next element in the list.
+pub struct Elem<T> {
     pub(crate) next: Index<T>,
-    /// The index of the previous element in the list.
     pub(crate) prev: Index<T>,
-    /// The data stored in this element.
-    /// `None` signifies a free or a sentinel list node.
-    pub(crate) data: Option<T>,
+    /// Stores both the generation count and the state (Free/Used/Sentinel).
+    pub(crate) vers: u32,
+    pub(crate) data: MaybeUninit<T>,
 }
 
-impl<T> Default for ListElem<T> {
-    /// Creates a default `ListElem` with no data and invalid links.
-    ///
-    /// This is the initial state for a newly allocated element before it is
-    /// linked into a list or the free list.
-    fn default() -> Self {
+impl<T> Clone for Elem<T>
+where T: Clone {
+    fn clone(&self) -> Self {
         Self {
-            next: Index::NONE,
-            prev: Index::NONE,
-            data: None,
+            next: self.next,
+            prev: self.prev,
+            vers: self.vers,
+            data: if self.is_used() {
+                // SAFETY: is_used() checks the state bits, confirming data initialization.
+                #[allow(unsafe_code)]
+                MaybeUninit::new(unsafe { self.data.assume_init_ref().clone() })
+            } else {
+                MaybeUninit::uninit()
+            },
         }
     }
 }
 
-impl<T> ListElem<T> {
+// Manual implementation of PartialEq
+impl<T: PartialEq> PartialEq for Elem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.vers != other.vers || self.next != other.next || self.prev != other.prev {
+            return false;
+        }
+        if self.is_used() {
+            // SAFETY: is_used() confirms data is initialized
+            #[allow(unsafe_code)]
+            unsafe {
+                self.data.assume_init_ref() == other.data.assume_init_ref()
+            }
+        } else {
+            true
+        }
+    }
+}
+
+impl<T: Eq> Eq for Elem<T> {}
+
+// Manual implementation of Debug
+impl<T: fmt::Debug> fmt::Debug for Elem<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut dbg = f.debug_struct("ListElem");
+        dbg.field("next", &self.next);
+        dbg.field("prev", &self.prev);
+        dbg.field("vers", &self.vers);
+        if self.is_used() {
+            // SAFETY: Checked is_used()
+            #[allow(unsafe_code)]
+            dbg.field("data", unsafe { self.data.assume_init_ref() });
+        } else if self.is_sentinel() {
+            dbg.field("data", &"<sentinel>");
+        } else if self.is_zombie() {
+            dbg.field("data", &"<zombie>");
+        } else {
+            dbg.field("data", &"<free>");
+        }
+        dbg.finish()
+    }
+}
+
+impl<T> Default for Elem<T> {
+    fn default() -> Self {
+        Self {
+            next: Index::NONE,
+            prev: Index::NONE,
+            vers: STATE_FREE, // Default is free
+            data: MaybeUninit::uninit(),
+        }
+    }
+}
+
+impl<T> Elem<T> {
     /// A builder-style method to set the data for this element.
     #[inline]
     pub fn with_data(mut self, data: T) -> Self {
-        self.data = Some(data);
+        self.data = MaybeUninit::new(data);
+        // Retain generation, set state to USED
+        self.vers = (self.vers & !STATE_MASK) | STATE_USED;
         self
     }
 
-    /// A builder-style method to set both `next` and `prev` links to the same index.
-    /// This is useful for initializing a self-referential sentinel or a standalone element.
+    /// A builder-style method to set both `next` and `prev` links.
     #[inline]
     pub fn with_both(mut self, index: Index<T>) -> Self {
         self.next = index;
@@ -61,32 +110,88 @@ impl<T> ListElem<T> {
         self
     }
 
-    /// Checks if the element is in use (i.e., contains user data).
-    /// Returns `false` for free nodes and list sentinels.
-    #[inline]
-    pub fn is_used(&self) -> bool {
-        self.data.is_some()
+    // --- State Checkers ---
+
+    #[inline(always)]
+    pub fn is_sentinel(&self) -> bool {
+        (self.vers & STATE_MASK) == STATE_SENTINEL
     }
 
-    /// Replaces the `next` index with a new one, returning the old index.
+    /// Checks if the element is in use (i.e., contains user data).
+    #[inline]
+    pub fn is_used(&self) -> bool {
+        (self.vers & STATE_MASK) == STATE_USED
+    }
+
+    #[inline]
+    pub fn is_free(&self) -> bool {
+        (self.vers & STATE_MASK) == STATE_FREE
+    }
+
+    #[inline]
+    pub fn is_zombie(&self) -> bool {
+        (self.vers & STATE_MASK) == STATE_ZOMBIE
+    }
+
+    // --- State Transitions ---
+
+    /// Bumps the generation count and sets the state to `new_state`.
+    /// Returns the new version integer.
+    pub(crate) fn bump_gen(&mut self, new_state: u32) -> u32 {
+        // 1. Clear the old state bits
+        let clean_vers = self.vers & !STATE_MASK;
+        // 2. Increment the generation part (handles wrapping automatically via overflow)
+        // 3. OR in the new state
+        self.vers = clean_vers.wrapping_add(GEN_INCREMENT) | new_state;
+        self.vers
+    }
+
+    /// Transitions a free node to a used node, initializing it with data.
+    /// Returns the new version number for the Index.
+    pub fn make_used(&mut self, data: T) -> u32 {
+        debug_assert!(self.is_free(), "Element must be free to become used");
+        self.data = MaybeUninit::new(data);
+        self.bump_gen(STATE_USED)
+    }
+
+    /// Transitions a used/sentinel node to a free node, dropping data if present.
+    /// Returns the new version number.
+    pub fn make_free(&mut self) -> u32 {
+        debug_assert!(!self.is_free(), "Element must not already be free");
+        if self.is_used() {
+            // SAFETY: We are dropping the data.
+            #[allow(unsafe_code)]
+            unsafe { self.data.assume_init_drop(); }
+        }
+        // If it was Zombie, data is already gone, so we just transition.
+
+        // Safety: Prevent using old data bits
+        self.data = MaybeUninit::uninit();
+        self.bump_gen(STATE_FREE)
+    }
+
+    /// Transitions a free node to a sentinel.
+    /// Returns the new version number.
+    pub fn make_sentinel(&mut self) -> u32 {
+        debug_assert!(self.is_free(), "Element must be free to become a sentinel");
+        self.bump_gen(STATE_SENTINEL)
+    }
+
+    /// Force sets the state to sentinel (used during init).
+    pub(crate) fn force_sentinel(&mut self) {
+        self.vers = (self.vers & !STATE_MASK) | STATE_SENTINEL;
+    }
+
     #[inline]
     pub fn new_next(&mut self, next: Index<T>) -> Index<T> {
         mem::replace(&mut self.next, next)
     }
 
-    /// Replaces the `prev` index with a new one, returning the old index.
     #[inline]
     pub fn new_prev(&mut self, prev: Index<T>) -> Index<T> {
         mem::replace(&mut self.prev, prev)
     }
 
-    /// Replaces the `data` with a new `Option<T>`, returning the old data.
-    #[inline]
-    pub fn new_data(&mut self, data: Option<T>) -> Option<T> {
-        mem::replace(&mut self.data, data)
-    }
-
-    /// Replaces both `prev` and `next` links, returning the old pair.
     #[inline]
     pub fn new_links(&mut self, prev: Index<T>, next: Index<T>) -> (Index<T>, Index<T>) {
         let old_prev = mem::replace(&mut self.prev, prev);
@@ -94,18 +199,124 @@ impl<T> ListElem<T> {
         (old_prev, old_next)
     }
 
-    /// Returns a tuple of the `(prev, next)` links.
+    /// Replaces the data in this element with `new_data`.
+    /// Returns `Some(old_data)` if the element was previously in use, or `None` if it was free/sentinel.
+    pub fn replace_data(&mut self, new_data: T) -> Option<T> {
+        let old_data = if self.is_used() {
+            // SAFETY: We are about to overwrite this data.
+            #[allow(unsafe_code)]
+            Some(unsafe { self.data.assume_init_read() })
+        } else {
+            None
+        };
+
+        // If we are Used OR Zombie, we become Used with data.
+        if self.is_used() || self.is_zombie() {
+            self.data = MaybeUninit::new(new_data);
+            // Ensure state is USED (fix Zombie state)
+            self.vers = (self.vers & !STATE_MASK) | STATE_USED;
+        }
+        old_data
+    }
+
+    /// Takes the data out of the element, transitioning it to a Zombie state.
+    /// This preserves the generation count but changes the state bits,
+    /// signaling that the data is gone but the node is not yet Free.
+    pub(crate) fn take_data(&mut self) -> Option<T> {
+        if self.is_used() {
+            #[allow(unsafe_code)]
+            let val = unsafe { self.data.assume_init_read() };
+            // Transition to Zombie: Keep generation, set state to 11
+            self.vers = (self.vers & !STATE_MASK) | STATE_ZOMBIE;
+            Some(val)
+        } else {
+            None
+        }
+    }
+
     #[inline]
     pub fn links(&self) -> (Index<T>, Index<T>) {
         (self.prev, self.next)
     }
 }
 
-impl<T: fmt::Display> fmt::Display for ListElem<T> {
+impl<T> fmt::Display for Elem<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match &self.data {
-            Some(data) => write!(f, "{}<-{}->{}", self.prev, data, self.next),
-            None => write!(f, "{}<-()->{}", self.prev, self.next),
+        if self.is_used() {
+            write!(f, "<{}[#]{}>", self.prev, self.next)
+        } else if self.is_sentinel() {
+            write!(f, "<{}>|<{}>", self.prev, self.next)
+        } else if self.is_zombie() {
+            write!(f, "<{}[z]{}>", self.prev, self.next)
+        } else {
+            write!(f, "<{}<->{}>", self.prev, self.next)
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::{Elem, Index};
+    use core::mem::MaybeUninit;
+    use serde::{Serialize, Deserialize, Serializer, Deserializer};
+
+    // Proxy for Serialization: Uses a reference (&T) to avoid cloning
+    #[derive(Serialize)]
+    struct SerializeProxy<'a, T> {
+        next: Index<T>,
+        prev: Index<T>,
+        vers: u32,
+        data: Option<&'a T>,
+    }
+
+    // Proxy for Deserialization: Must own the data (T)
+    #[derive(Deserialize)]
+    #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+    struct DeserializeProxy<T> {
+        next: Index<T>,
+        prev: Index<T>,
+        vers: u32,
+        data: Option<T>,
+     }
+
+    impl<T: Serialize> Serialize for Elem<T> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let data = if self.is_used() {
+                #[allow(unsafe_code)]
+                Some(unsafe { self.data.assume_init_ref() })
+            } else {
+                None
+            };
+            let proxy = SerializeProxy {
+                next: self.next,
+                prev: self.prev,
+                vers: self.vers,
+                data,
+            };
+            proxy.serialize(serializer)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Elem<T> {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let proxy = DeserializeProxy::<T>::deserialize(deserializer)?;
+            let data = if let Some(data) = proxy.data {
+                MaybeUninit::new(data)
+            } else {
+                MaybeUninit::uninit()
+            };
+            Ok(Elem {
+                next: proxy.next,
+                prev: proxy.prev,
+                vers: proxy.vers,
+                data,
+            })
         }
     }
 }
@@ -115,138 +326,75 @@ mod tests {
     use super::*;
     use crate::index::Index;
 
-    // A simple struct for testing purposes.
-    // Deriving Debug and PartialEq is useful for assertions.
-    #[derive(Clone, Copy, Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct MyElemData {
         value: i32,
     }
 
+    impl fmt::Display for MyElemData {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{}", self.value)
+        }
+    }
+
     #[test]
     fn test_default_creation() {
-        let elem = ListElem::<MyElemData>::default();
+        let elem = Elem::<MyElemData>::default();
         assert_eq!(elem.next, Index::NONE);
         assert_eq!(elem.prev, Index::NONE);
-        assert!(elem.data.is_none());
         assert!(!elem.is_used());
     }
 
     #[test]
-    fn test_builder_methods() {
+    fn test_builder_methods_and_equality() {
         let data = MyElemData { value: 100 };
-        // Use the correct generic type for the Index to match the element.
         let index = Index::<MyElemData>::from(42_u32);
 
-        // Test with_data
-        let elem_with_data = ListElem::default().with_data(data);
-        assert_eq!(elem_with_data.data, Some(data));
-        assert!(elem_with_data.is_used());
-        assert_eq!(elem_with_data.next, Index::NONE); // Other fields unchanged
+        let elem1 = Elem::default().with_data(data);
+        let elem2 = Elem::default().with_data(data);
 
-        // Test with_both. Now the types match.
-        let elem_with_links = ListElem::default().with_both(index);
-        assert_eq!(elem_with_links.next, index);
-        assert_eq!(elem_with_links.prev, index);
-        assert!(!elem_with_links.is_used()); // Data field unchanged
-    }
-    #[test]
-    fn test_is_used() {
-        let mut elem = ListElem::<MyElemData>::default();
-        assert!(!elem.is_used());
+        assert_eq!(elem1, elem2);
+        assert!(elem1.is_used());
 
-        elem.data = Some(MyElemData { value: 1 });
-        assert!(elem.is_used());
+        let elem3 = Elem::default().with_data(MyElemData { value: 200 });
+        assert_ne!(elem1, elem3);
 
-        elem.data = None;
-        assert!(!elem.is_used());
+        let elem_links = Elem::default().with_both(index);
+        assert_eq!(elem_links.next, index);
+        assert_eq!(elem_links.prev, index);
+        assert!(!elem_links.is_used());
     }
 
     #[test]
-    fn test_mutator_methods() {
-        let mut elem = ListElem::<MyElemData>::default();
-        let index1 = Index::from(1_u32);
-        let index2 = Index::from(2_u32);
-        let data1 = Some(MyElemData { value: 10 });
-        let data2 = Some(MyElemData { value: 20 });
+    fn test_replace_data() {
+        let mut elem = Elem::default().with_data(MyElemData { value: 10 });
 
-        // Test new_next
-        let old_next = elem.new_next(index1);
-        assert_eq!(old_next, Index::NONE);
-        assert_eq!(elem.next, index1);
+        // Replace existing data
+        let old = elem.replace_data(MyElemData { value: 20 });
+        assert_eq!(old, Some(MyElemData { value: 10 }));
+        #[allow(unsafe_code)]
+        let data = unsafe { elem.data.assume_init_ref() };
+        assert_eq!(*data, MyElemData { value: 20 });
 
-        // Test new_prev
-        let old_prev = elem.new_prev(index2);
-        assert_eq!(old_prev, Index::NONE);
-        assert_eq!(elem.prev, index2);
-
-        // Test new_data
-        let old_data = elem.new_data(data1);
-        assert_eq!(old_data, None);
-        assert_eq!(elem.data, data1);
-
-        let old_data_2 = elem.new_data(data2);
-        assert_eq!(old_data_2, data1);
-        assert_eq!(elem.data, data2);
+        // Replace on a free node
+        let mut free_elem = Elem::<MyElemData>::default();
+        assert!(free_elem.is_free());
+        let old_free = free_elem.replace_data(MyElemData { value: 99 });
+        assert_eq!(old_free, None);
+        assert!(!free_elem.is_used()); // replacing data on free node should not make it used
     }
 
     #[test]
-    fn test_new_links() {
-        let mut elem = ListElem::<MyElemData>::default();
-        let index3 = Index::from(3_u32);
-        let index4 = Index::from(4_u32);
+    fn test_debug_impl() {
+        let elem = Elem::default().with_data(MyElemData { value: 55 });
+        let debug_str = format!("{:?}", elem);
+        // Ensure debug implementation is stable
+        assert!(debug_str.contains("ListElem"));
+        assert!(debug_str.contains("data: MyElemData"));
+        assert!(debug_str.contains("55"));
 
-        // Setup the "old" values before the call
-        let old_prev = elem.new_prev(Index::from(98_u32));
-        let old_next = elem.new_next(Index::from(99_u32));
-        // Sanity check: old_prev and old_next should be NONE initially
-        assert!(old_prev.is_none());
-        assert!(old_next.is_none());
-
-        // Call the function under test
-        let (returned_prev, returned_next) = elem.new_links(index3, index4);
-
-        // Assert that the returned values are the ones we just replaced (98 and 99)
-        assert_eq!(returned_prev, Index::from(98_u32));
-        assert_eq!(returned_next, Index::from(99_u32));
-
-        // Verify the internal state was updated correctly with the new values.
-        assert_eq!(elem.prev, index3);
-        assert_eq!(elem.next, index4);
-    }
-
-    #[test]
-    fn test_links_getter() {
-        let index1 = Index::from(10_u32);
-        let index2 = Index::from(20_u32);
-        let mut elem = ListElem::<MyElemData>::default();
-        elem.prev = index1;
-        elem.next = index2;
-
-        let (p, n) = elem.links();
-        assert_eq!(p, index1);
-        assert_eq!(n, index2);
-    }
-
-    #[test]
-    fn test_formatting() {
-        // We need T to implement Display for this test.
-        let mut elem = ListElem::<i32>::default();
-        elem.prev = Index::from(1_u32);
-        elem.next = Index::from(2_u32);
-
-        // Test without data
-        let display_no_data = format!("{}", elem);
-        assert_eq!(display_no_data, "1<-()->2");
-
-        // Test with data
-        elem.data = Some(99);
-        let display_with_data = format!("{}", elem);
-        assert_eq!(display_with_data, "1<-99->2");
-
-        // Test with NONE indices
-        let mut elem2 = ListElem::<i32>::default();
-        elem2.data = Some(5);
-        let display_none_links = format!("{}", elem2);
-        assert_eq!(display_none_links, "-<-5->-");
+        let empty_elem = Elem::<MyElemData>::default();
+        let debug_str_empty = format!("{:?}", empty_elem);
+        assert!(debug_str_empty.contains("<free>"));
     }
 }

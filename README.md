@@ -75,8 +75,9 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
 - **API Verbosity**: The design requires passing a mutable reference to the `ElemPool` for every operation. This is necessary for safety but is more verbose than standard library collections. Mitigation: The `PieView` struct is provided to bundle the list and pool together, offering a standard, cleaner API for common use cases.
 - **Not a Drop-in Replacement**: Due to its unique API, `pie_core` cannot be used as a direct replacement for standard library collections without refactoring the calling code.
-- **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink automatically. The user is responsible for shrinking the pool at opportune moments, if necessary. Note: Shrinking the pool invalidates some of the existing indices; the operation returns a map translating old indices to new ones.
-- **Non-RAII Cleanup**: Unlike standard collections, dropping a PieList does not deallocate its contents. Users must manually clear lists to return memory to the pool.
+- **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink automatically. The user is responsible for shrinking the pool at opportune moments, if necessary.
+- **Handle Invalidation on Shrink**: Calling `shrink_to_fit()` on a pool invalidates all existing `Index<T>` and `FibHandle` values. The operation returns a remapping table, and users **must** call `remap()` on all active lists and update any stored handles. Failure to do so leads to stale index errors.
+- **Non-RAII Cleanup**: Unlike standard collections, dropping a `PieList` does not deallocate its contents. Users must manually call `clear()` or `drain()` to return memory to the pool. **In debug builds, dropping a non-empty list will panic** to help catch memory leaks during development. This check is disabled in release builds.
 
 ## Features
 

@@ -41,7 +41,7 @@ pub struct PieList<T> {
     /// The index of the sentinel node for this list. The sentinel's `next`
     /// points to the head of the list, and its `prev` points to the tail.
     pub(crate) sentinel: Index<T>,
-    /// The new key is greater than the current key. `decrease_key` can only reduce values.
+    /// The number of data elements in this list (excludes the sentinel).
     pub(crate) len: usize,
     #[cfg(debug_assertions)]
     check_leak: bool,
@@ -98,6 +98,10 @@ impl<T> PieList<T> {
         let sentinel = pool
             .index_new()
             .expect("Pool failed to allocate sentinel for new list");
+        // Convert the allocated ZOMBIE element to a SENTINEL
+        let sentinel = pool
+            .index_make_sentinel(sentinel)
+            .expect("Failed to convert element to sentinel");
         // The list is created empty, so the sentinel initially points to itself.
         #[cfg(debug_assertions)]
         { Self { sentinel, len: 0, check_leak: true } }
@@ -184,8 +188,7 @@ impl<T> PieList<T> {
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
     pub fn push_front(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
-        let new_idx = pool.index_new()?;
-        pool.data_swap(new_idx, Some(data));
+        let new_idx = pool.index_new_with_data(data)?;
         pool.index_link_after(new_idx, self.sentinel)?;
         self.len += 1;
         Ok(new_idx)
@@ -199,8 +202,7 @@ impl<T> PieList<T> {
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
     pub fn push_back(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
-        let new_idx = pool.index_new()?;
-        pool.data_swap(new_idx, Some(data));
+        let new_idx = pool.index_new_with_data(data)?;
         pool.index_link_before(new_idx, self.sentinel)?;
         self.len += 1;
         Ok(new_idx)
@@ -243,7 +245,7 @@ impl<T> PieList<T> {
     }
 
     /// Enable/disable the leak check for this list in debug builds
-    /// 
+    ///
     /// NOTE: No leak check is performed in release builds
     pub fn set_leak_check(&mut self, _leak_check: bool) {
         #[cfg(debug_assertions)]
@@ -691,6 +693,12 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     }
 }
 
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 /// A mutable iterator over the elements of a `PieList`.
 pub struct IterMut<'a, T: 'a> {
     pool: &'a mut ElemPool<T>,
@@ -733,6 +741,12 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         // references.
         let pool_ptr = self.pool as *mut ElemPool<T>;
         unsafe { (*pool_ptr).data_mut(current) }
+    }
+}
+
+impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
+    fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -786,6 +800,12 @@ impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
         self.pool.index_del(current_idx).unwrap();
 
         data
+    }
+}
+
+impl<'a, T> ExactSizeIterator for Drain<'a, T> {
+    fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -855,6 +875,17 @@ mod tests {
 
         assert!(list.is_empty());
         assert_eq!(pool.len(), 0); // Elements returned to the pool
+    }
+
+    #[test]
+    fn test_clear_debug() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back(1, &mut pool).unwrap();
+        list.push_back(2, &mut pool).unwrap();
+        assert_eq!(list.len(), 2);
+        list.clear(&mut pool);
+        assert!(list.is_empty());
     }
 
     #[test]

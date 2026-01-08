@@ -1,4 +1,67 @@
 //! A Fibonacci heap implementation, built on the `ElemPool` and `PieList`.
+//!
+//! # Internal Architecture
+//!
+//! ## Structure Overview
+//!
+//! ```text
+//! FibHeap<K, V>
+//! ┌────────────────────────────────────────────────────────────────┐
+//! │ pool: ElemPool<Node<K,V>>   (owns all node memory)             │
+//! │ roots: PieList<Node<K,V>>   (forest of heap-ordered trees)     │
+//! │ min: FibHandle<K,V>         (handle to minimum-key node)       │
+//! │ len: usize                  (total node count)                 │
+//! └────────────────────────────────────────────────────────────────┘
+//!
+//! Node<K, V>
+//! ┌────────────────────────────────────────────────────────────────┐
+//! │ key: K                      (priority, smaller = higher)       │
+//! │ value: V                    (user data)                        │
+//! │ parent: FibHandle<K,V>      (NONE if root node)                │
+//! │ children: PieList<Node>     (child nodes form a list)          │
+//! │ degree: usize               (number of children)               │
+//! │ marked: bool                (cascading cut flag)               │
+//! └────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Complexity
+//!
+//! | Operation      | Amortized | Worst-case |
+//! |----------------|-----------|------------|
+//! | push           | O(1)      | O(1)       |
+//! | peek           | O(1)      | O(1)       |
+//! | pop            | O(log n)  | O(n)       |
+//! | decrease_key   | O(1)      | O(log n)   |
+//!
+//! ## Integration with PieList
+//!
+//! The heap uses `PieList` for:
+//! - The root list (forest of heap-ordered trees)
+//! - Each node's children list
+//!
+//! All nodes live in the same `ElemPool`, enabling efficient memory reuse.
+//! When a node is popped, its children are spliced into the root list,
+//! reusing the existing links without allocation.
+//!
+//! ## Pop Operation (Consolidation)
+//!
+//! The `pop()` operation triggers tree consolidation:
+//! 1. Remove min node from root list
+//! 2. Splice min's children into root list
+//! 3. Consolidate: merge trees of equal degree until all degrees are unique
+//! 4. Find new minimum
+//!
+//! Consolidation uses an auxiliary degree table (`IndexMap<usize, FibHandle>`)
+//! to track trees by their degree.
+//!
+//! ## Decrease Key (Cascading Cut)
+//!
+//! When a key is decreased below its parent's key:
+//! 1. Cut the node and move it to the root list
+//! 2. If the parent is marked, cut it too (cascade)
+//! 3. If the parent is unmarked, mark it
+//!
+//! This maintains the Fibonacci heap property and ensures O(1) amortized cost.
 
 use crate::{ElemPool, Index, PieList};
 use crate::IndexMap;

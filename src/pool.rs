@@ -1,4 +1,72 @@
-//! A generic pool allocator for a multi-headed doubly-linked index-list.
+//! A generic pool allocator for multi-headed doubly-linked lists.
+//!
+//! # Internal Architecture
+//!
+//! `ElemPool<T>` is a generational arena that provides memory for all data
+//! structures in this library. The key design decisions are:
+//!
+//! ## Memory Layout
+//!
+//! ```text
+//! ElemPool<T>
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │ elems: Vec<Elem<T>>                                         │
+//! │ ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐    │
+//! │ │  0  │  1  │  2  │  3  │  4  │  5  │  6  │  7  │  8  │    │
+//! │ │Free │ S₁  │ A   │ B   │ S₂  │ X   │ Y   │Free │Free │    │
+//! │ │Sent.│     │     │     │     │     │     │     │     │    │
+//! │ └─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘    │
+//! │                                                             │
+//! │ freed: 2 (slots 7, 8 are free)                              │
+//! │ used: 5  (slots 2,3,5,6 have data; S₁,S₂ are sentinels)     │
+//! └─────────────────────────────────────────────────────────────┘
+//!
+//! Free List:  [0] ↔ [7] ↔ [8] ↔ [0]  (circular, slot 0 is sentinel)
+//! List 1:     [1] ↔ [2] ↔ [3] ↔ [1]  (S₁ sentinel, A↔B data)
+//! List 2:     [4] ↔ [5] ↔ [6] ↔ [4]  (S₂ sentinel, X↔Y data)
+//! ```
+//!
+//! ## Slot 0 is Reserved
+//!
+//! The element at index 0 is always the **free list sentinel**. It never
+//! holds user data. Its `next`/`prev` links form the circular free list.
+//! This simplifies allocation/deallocation (no empty-list edge cases).
+//!
+//! ## Generational Indexing (ABA Protection)
+//!
+//! Each element tracks a generation counter. When freed and reused, the
+//! generation increments. Old handles become "stale" — they point to the
+//! right slot but have the wrong generation, so `get()` fails safely:
+//!
+//! ```text
+//! Time 0: alloc slot 5 → handle {slot:5, vers:3}
+//! Time 1: free slot 5  → element 5 generation becomes 4
+//! Time 2: alloc slot 5 → handle {slot:5, vers:5}
+//!
+//! Old handle {slot:5, vers:3} → get() returns None (stale)
+//! New handle {slot:5, vers:5} → get() returns Some(&data)
+//! ```
+//!
+//! ## Two-Phase Deletion
+//!
+//! Deletion is split into data removal and element recycling:
+//!
+//! 1. `data_swap(handle, None)` — Take data out (element → Zombie state)
+//! 2. `index_del(handle)` — Return element to free list (Zombie → Free)
+//!
+//! This separation enables complex operations like FibHeap's `pop()` which
+//! must manipulate node links after extracting data but before freeing.
+//!
+//! ## Shrink-to-Fit Strategy
+//!
+//! When `shrink_to_fit()` is called, free elements at the end of the Vec
+//! are removed. Since this invalidates slot numbers, a remapping table is
+//! returned so data structures can update their handles. The algorithm:
+//!
+//! 1. Build remap: old_slot → new_slot (O(capacity) scan)
+//! 2. Swap-remove free elements from the end
+//! 3. Update all next/prev links using remap
+//! 4. Return remap for external handle updates
 
 use crate::elem::Elem;
 use crate::Index;

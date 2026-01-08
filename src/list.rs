@@ -1,4 +1,63 @@
-//! Main implementation of the PieList type
+//! Main implementation of the `PieList<T>` type.
+//!
+//! # Internal Architecture
+//!
+//! ## Sentinel-Based Design
+//!
+//! Each `PieList` has a dedicated sentinel node that:
+//! - Contains no user data (state = SENTINEL)
+//! - Has `next` pointing to the head, `prev` pointing to the tail
+//! - Points to itself when the list is empty
+//! - Eliminates null checks and edge cases in all operations
+//!
+//! ```text
+//! Empty List:           List with [A, B, C]:
+//!
+//!   ┌───┐                 ┌───┐
+//!   │ S │◄──────────►     │ S │
+//!   └───┘                 └─┬─┘
+//!                           │
+//!           ┌───────────────┼───────────────┐
+//!           ▼               │               ▼
+//!         ┌───┐           ┌───┐           ┌───┐
+//!         │ A │ ◄───────► │ B │ ◄───────► │ C │
+//!         └───┘           └───┘           └───┘
+//!           ▲                               │
+//!           └───────────────────────────────┘
+//! ```
+//!
+//! ## Pool-Centric API
+//!
+//! All operations require passing the `ElemPool` explicitly:
+//! - `list.push_back(data, &mut pool)` not `list.push_back(data)`
+//! - Clear ownership semantics, no hidden state
+//! - Multiple lists can share the same pool efficiently
+//!
+//! ## Leak Detection (Debug Only)
+//!
+//! In debug builds, dropping a non-empty list triggers a panic. This catches
+//! memory leaks where elements weren't returned to the pool. The sentinel
+//! itself is allowed to leak (it gets cleaned up with the pool).
+//!
+//! ## Stable Sort Implementation
+//!
+//! The `sort_by()` method uses bottom-up iterative merge sort:
+//!
+//! 1. **Cascade Phase**: Build power-of-2 sorted runs bottom-up
+//!    - Uses O(log n) temporary sentinels for merge lists
+//!    - Merges same-sized runs immediately
+//!
+//! 2. **Final Merge**: Combine remaining runs into the original list
+//!    - Iterates high→low slots to maintain stability
+//!    - O(n log n) time, O(log n) space (for sentinels only)
+//!
+//! ## Memory Notes
+//!
+//! - `PieList<T>` is only 24 bytes (Index + len + debug flag)
+//! - Creating a list allocates one sentinel element from the pool
+//! - Moving a list is cheap (just copies the handle)
+//! - Cloning a list creates a shallow copy sharing the same sentinel
+
 // Allow unsafe for the performance-critical iterator implementation.
 #![allow(unsafe_code)]
 

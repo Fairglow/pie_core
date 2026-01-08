@@ -1,4 +1,46 @@
-//! Definition of the Index type
+//! Definition of the `Index<T>` type — type-safe generational handles.
+//!
+//! # Internal Architecture
+//!
+//! ## Handle Design
+//!
+//! ```text
+//! Index<T> (16 bytes on 64-bit, 12 bytes on 32-bit)
+//! ┌─────────────────┬─────────────────┬───────────────┐
+//! │   slot: u32     │   vers: u32     │ PhantomData<T>│
+//! │   (position)    │   (generation)  │ (type safety) │
+//! └─────────────────┴─────────────────┴───────────────┘
+//! ```
+//!
+//! ## Sentinel Value Pattern
+//!
+//! Instead of `Option<Index<T>>`, we use `slot = u32::MAX` as the "none"
+//! sentinel. This gives us:
+//! - Same size as the non-optional type
+//! - No double-wrapping overhead
+//! - Simple `is_some()`/`is_none()` checks
+//! - Clean API without Option ergonomic issues
+//!
+//! ## Why Not NonMaxU32?
+//!
+//! We considered using `NonMaxU32` for niche optimization so that
+//! `Option<Index<T>>` would be the same size. However:
+//! - Analysis shows `Option<Index<T>>` is never used in the codebase
+//! - All internal APIs use the `Index::NONE` sentinel pattern
+//! - No size benefit from the optimization
+//!
+//! ## Type Safety via PhantomData
+//!
+//! The `PhantomData<T>` marker ensures `Index<Foo>` and `Index<Bar>` are
+//! incompatible types at compile time. This prevents bugs where handles
+//! from one pool are accidentally used with another.
+//!
+//! ## Generation Matching
+//!
+//! The `vers` field must match the element's current generation for a
+//! handle to be valid. When an element is freed and reused, its generation
+//! increments, invalidating old handles. This provides ABA protection
+//! without runtime overhead beyond a simple u32 comparison.
 
 use core::{cmp::Ordering, convert::TryFrom, fmt, hash::{Hash, Hasher}, marker::PhantomData};
 #[cfg(feature = "serde")]

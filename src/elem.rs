@@ -1,16 +1,99 @@
-//! Definition of the generic `ListElem<T>` type.
+//! Definition of the generic `Elem<T>` type — the fundamental node structure.
+//!
+//! # Internal Architecture
+//!
+//! Each `Elem<T>` represents a single node that can participate in doubly-linked
+//! lists. The key insight is that the element itself contains the list pointers
+//! (`next`/`prev`), making this an *intrusive* linked list design.
+//!
+//! ## State Machine
+//!
+//! Each element has a 4-state lifecycle encoded in the low 2 bits of `vers`:
+//!
+//! ```text
+//! vers: u32
+//! ┌────────────────────────────────────┬───────────────────┐
+//! │     Generation (30 bits)           │   State (2 bits)  │
+//! │     0x00000000 - 0x3FFFFFFF        │   00 01 10 11     │
+//! └────────────────────────────────────┴───────────────────┘
+//!
+//! States:
+//!   FREE (00)     - On free list, no data, links to free list neighbors
+//!   USED (01)     - Contains user data, linked in a PieList
+//!   SENTINEL (10) - List sentinel, no data, links to head/tail
+//!   ZOMBIE (11)   - Data removed but not yet returned to free list
+//! ```
+//!
+//! ## Transitions
+//!
+//! ```text
+//!     ┌───────────────────────────────────────────┐
+//!     │                                           │
+//!     ▼                                           │
+//!  ┌──────┐  index_new()    ┌────────┐            │
+//!  │ FREE │ ──────────────► │ ZOMBIE │            │
+//!  └──────┘                 └────────┘            │
+//!     ▲                          │                │
+//!     │                          │ data_swap(Some)│
+//!     │ index_del()              ▼                │
+//!     │                     ┌────────┐            │
+//!     └──────────────────── │  USED  │ ───────────┘
+//!                           └────────┘   data_swap(None)
+//!                                │
+//!          index_make_sentinel() │ (from ZOMBIE)
+//!                                ▼
+//!                           ┌──────────┐
+//!                           │ SENTINEL │
+//!                           └──────────┘
+//! ```
+//!
+//! ## Why ZOMBIE?
+//!
+//! The Zombie state enables two-phase deletion:
+//! 1. `data_swap(None)` — Extract data, element becomes Zombie (still linked)
+//! 2. `index_del()` — Unlink and return to free list (Zombie → Free)
+//!
+//! This separation is essential for:
+//! - Safe cursor operations during iteration
+//! - FibHeap's pop() which rearranges nodes before freeing
+//! - Maintaining link integrity during complex operations
 
 use crate::index::Index;
 use core::{fmt, mem::{self, MaybeUninit}};
 
-// --- Bitwise State Management ---
-// Layout: [ ... Generation (30 bits) ... | State (2 bits) ]
+// ============================================================================
+// Internal: Bitwise State Management
+// ============================================================================
+//
+// The `vers` field packs both generation counter and element state:
+//   - Bits [31:2]: Generation counter (30 bits, ~1 billion generations)
+//   - Bits [1:0]:  State (4 possible states)
+//
+// This encoding enables:
+//   - O(1) state checks via bitwise AND
+//   - Generation increment that preserves state (add 0b100)
+//   - State transitions that preserve generation (modify low 2 bits only)
+
+/// Mask to extract the state bits from `vers`.
 pub(crate) const STATE_MASK: u32 = 0b11;
-pub(crate) const STATE_FREE: u32 = 0b00;     // 0
-pub(crate) const STATE_USED: u32 = 0b01;     // 1
-pub(crate) const STATE_SENTINEL: u32 = 0b10; // 2
-pub(crate) const STATE_ZOMBIE: u32 = 0b11;   // 3 (Used but data taken)
-const GEN_INCREMENT: u32 = 0b100; // Adds 1 to the generation part
+
+/// Element is on the free list, available for allocation.
+/// Links point to adjacent free list elements.
+pub(crate) const STATE_FREE: u32 = 0b00;
+
+/// Element contains user data and is linked in a PieList.
+pub(crate) const STATE_USED: u32 = 0b01;
+
+/// Element is a list sentinel (no data, but has links).
+/// Each PieList has exactly one sentinel.
+pub(crate) const STATE_SENTINEL: u32 = 0b10;
+
+/// Element had its data removed but hasn't been returned to free list.
+/// Used as an intermediate state during deletion.
+pub(crate) const STATE_ZOMBIE: u32 = 0b11;
+
+/// Added to `vers` to increment generation by 1 (skips over state bits).
+const GEN_INCREMENT: u32 = 0b100;
 
 /// The fundamental node structure for a doubly-linked list.
 pub struct Elem<T> {

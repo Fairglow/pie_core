@@ -85,6 +85,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// assert_eq!(cursor.index(), None); // Past the end
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn index(&self) -> Option<usize> {
         if self.current == self.list.sentinel {
             None
@@ -108,6 +109,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// assert_eq!(cursor.peek(&pool), Some(&10));
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn peek<'p>(&self, pool: &'p ElemPool<T>) -> Option<&'p T> {
         if self.current == self.list.sentinel {
             None
@@ -135,6 +137,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// assert_eq!(list.front(&pool), Some(&99));
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn peek_mut<'p>(&mut self, pool: &'p mut ElemPool<T>) -> Option<&'p mut T> {
         if self.current == self.list.sentinel {
             None
@@ -148,6 +151,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// - If "Before Start": Moves to the first element (Head).
     /// - If at the last element: Moves to "After End".
     /// - If "After End": Stays at "After End" (no-op).
+    #[inline]
     pub fn move_next(&mut self, pool: &ElemPool<T>) {
         // Case 1: Already at "After End"
         if self.current == self.list.sentinel && self.logical_index == self.list.len() {
@@ -175,6 +179,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// - If "After End": Moves to the last element (Tail).
     /// - If at the first element: Moves to "Before Start".
     /// - If "Before Start": Stays at "Before Start" (no-op).
+    #[inline]
     pub fn move_prev(&mut self, pool: &ElemPool<T>) {
         // Case 1: Already at "Before Start"
         if self.current == self.list.sentinel && self.logical_index == usize::MAX {

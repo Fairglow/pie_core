@@ -507,6 +507,17 @@ impl<T> ElemPool<T> {
     ///
     /// This implementation relies on the internal free list to identify holes
     /// efficiently, avoiding a full scan of the pool's lower bounds.
+    ///
+    /// # Performance
+    ///
+    /// The algorithm is O(f) where f is the number of freed elements, plus O(m)
+    /// for fixing neighbor pointers where m is the number of moved elements.
+    /// Memory usage is O(f) for the temporary data structures.
+    ///
+    /// For large pools with many freed elements, the implementation uses:
+    /// - A compact boolean array for tracking free slots in the tail region
+    /// - Pre-sized collections to minimize allocations
+    /// - A slot-indexed remapping array (instead of hash lookups) for O(1) neighbor resolution
     pub fn shrink_to_fit(&mut self) -> IndexMap<Index<T>, Index<T>> {
         let old_len = self.elems.len();
         // The target length is simply total items minus the count of free items.
@@ -518,72 +529,100 @@ impl<T> ElemPool<T> {
         if target_len == old_len {
             return IndexMap::new();
         }
+
+        let tail_len = old_len - target_len; // == self.freed
+
         // 1. Identify Vacancies and Tag Tail-Free items.
         // We need a way to quickly check if an item in the tail is free.
         // Since the tail size is exactly equal to self.freed, we can allocate
         // a boolean map for just the tail section.
         // Map index i -> vector index (target_len + i)
-        let mut is_free_tail = vec![false; self.freed];
-        let mut vacancies = Vec::with_capacity(self.freed);
+        let mut is_free_tail = vec![false; tail_len];
+        let mut vacancies = Vec::with_capacity(tail_len);
         let free_sentinel = Self::free_sentinel_index();
 
         // Start from the first free element directly to avoid version check on Stale sentinel (0@0 vs 0@2)
         let mut current_free = self.elems[0].next;
 
         while current_free != free_sentinel {
-            let idx_u32 = current_free.get().unwrap();
-            if idx_u32 < target_len {
+            let idx = current_free.get().unwrap();
+            if idx < target_len {
                 // This is a hole in the preserved region. We must fill it.
-                vacancies.push(idx_u32);
+                vacancies.push(idx);
             } else {
                 // This is a hole in the region we are cutting off.
                 // We mark it so the tail-scanner knows to ignore it.
-                is_free_tail[idx_u32 - target_len] = true;
+                is_free_tail[idx - target_len] = true;
             }
             current_free = self.next(current_free);
         }
-        // 2. Move Used Items from Tail to Head
-        let mut remapping = IndexMap::new();
+
+        // 2. Build slot-indexed remapping array for O(1) lookups.
+        // This is more efficient than hash map lookups for neighbor resolution.
+        // For elements in the tail region, store their new destination slot.
+        // u32::MAX means "not remapped" (either free or not in tail).
+        let mut slot_remap = vec![u32::MAX; tail_len];
+
+        // Pre-size the result map with expected capacity.
+        let num_moved = tail_len - vacancies.len().min(tail_len);
+        let mut remapping = IndexMap::with_capacity(num_moved);
+
+        // 3. Move Used Items from Tail to Head
         // We iterate the tail region. Any item NOT marked as free is implicitly
         // a "Used" item (either User Data or a List Sentinel).
         for source in target_len..old_len {
-            if is_free_tail[source - target_len] {
+            let tail_idx = source - target_len;
+            if is_free_tail[tail_idx] {
                 continue; // It's a free node in the tail; it will be truncated.
             }
             // It is a used node. Pop a vacancy to move it to.
             // Safety: The math guarantees vacancies.len() > 0 because
             // number of used items in tail == number of free items in head.
             let dest = vacancies.pop().expect("Logic Error: Mismatch in free/used counts");
-            // Swap the elements
-            // We must capture the version from the element being moved (source)
-            // BEFORE the swap invalidates 'source' index conceptually (though swap handles data)
-            // Actually, the element structure moves, so the version moves with it.
-            // We need the version to construct a valid Index key.
+
+            // Record in the slot remap array for O(1) neighbor resolution.
+            slot_remap[tail_idx] = dest as u32;
+
+            // Capture the version from the element being moved.
             let vers = self.elems[source].vers;
             self.elems.swap(dest, source);
+
             let old_idx = Index::new(source as u32, vers);
             let new_idx = Index::new(dest as u32, vers);
             remapping.insert(old_idx, new_idx);
-            // 3. Fix Neighbors (The Graph Patching)
+
+            // 4. Fix Neighbors (The Graph Patching)
             // The node at `dest` currently thinks its neighbors are pointing to `source`.
             // We must update those neighbors to point to `dest`.
-            // Note: We used to handle self-loops explicitly, but the remapping map handles it naturally.
             let (prev_idx, next_idx) = self.elems[dest].links();
 
+            // Helper: resolve an index to its effective slot after remapping.
+            // Uses O(1) array lookup for tail items instead of hash map.
+            let resolve = |idx: Index<T>, remap: &[u32], tgt_len: usize| -> Index<T> {
+                let slot = idx.slot as usize;
+                if slot >= tgt_len && slot < old_len {
+                    let new_slot = remap[slot - tgt_len];
+                    if new_slot != u32::MAX {
+                        return Index::new(new_slot, idx.vers);
+                    }
+                }
+                idx
+            };
+
             // Fix prev's next pointer
-            let effective_prev = remapping.get(&prev_idx).copied().unwrap_or(prev_idx);
-            // We use unwrap because a used node must have valid neighbors.
+            let effective_prev = resolve(prev_idx, &slot_remap, target_len);
             if let Ok(elem) = self.get_mut(effective_prev) {
                 elem.next = new_idx;
             }
 
             // Fix next's prev pointer
-            let effective_next = remapping.get(&next_idx).copied().unwrap_or(next_idx);
+            let effective_next = resolve(next_idx, &slot_remap, target_len);
             if let Ok(elem) = self.get_mut(effective_next) {
                 elem.prev = new_idx;
             }
         }
-        // 4. Final Cleanup
+
+        // 5. Final Cleanup
         // Truncate the vector
         self.elems.truncate(target_len);
         // Reset pool state

@@ -2,9 +2,11 @@
 // Allow unsafe for the performance-critical iterator implementation.
 #![allow(unsafe_code)]
 
+extern crate alloc;
+
 use crate::{Cursor, CursorMut, ElemPool, Index, IndexError, IndexMap,
             PieView, PieViewMut};
-use core::{cmp, marker::PhantomData, mem};
+use core::{cmp, marker::PhantomData};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -138,6 +140,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn front<'a>(&self, pool: &'a ElemPool<T>) -> Option<&'a T> {
         if self.is_empty() {
             return None;
@@ -149,6 +152,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn front_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
         if self.is_empty() {
             return None;
@@ -161,6 +165,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn back<'a>(&self, pool: &'a ElemPool<T>) -> Option<&'a T> {
         if self.is_empty() {
             return None;
@@ -172,6 +177,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn back_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> Option<&'a mut T> {
         if self.is_empty() {
             return None;
@@ -187,6 +193,7 @@ impl<T> PieList<T> {
     ///
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
+    #[inline]
     pub fn push_front(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
         let new_idx = pool.index_new_with_data(data)?;
         pool.index_link_after(new_idx, self.sentinel)?;
@@ -201,6 +208,7 @@ impl<T> PieList<T> {
     ///
     /// # Errors
     /// Returns an `IndexError` if the pool is unable to allocate a new element.
+    #[inline]
     pub fn push_back(&mut self, data: T, pool: &mut ElemPool<T>) -> Result<Index<T>, IndexError> {
         let new_idx = pool.index_new_with_data(data)?;
         pool.index_link_before(new_idx, self.sentinel)?;
@@ -214,6 +222,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn pop_front(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
         if self.is_empty() {
             return None;
@@ -232,6 +241,7 @@ impl<T> PieList<T> {
     ///
     /// # Complexity
     /// O(1)
+    #[inline]
     pub fn pop_back(&mut self, pool: &mut ElemPool<T>) -> Option<T> {
         if self.is_empty() {
             return None;
@@ -321,6 +331,13 @@ impl<T> PieList<T> {
     /// O(n log n) comparisons, where `n` is the number of elements in the list.
     /// The merge operations are done in-place without new allocations from the pool.
     ///
+    /// # Implementation
+    ///
+    /// Uses an optimized bottom-up iterative merge sort that allocates at most
+    /// O(log n) temporary sentinel nodes, which are reused across all merge
+    /// operations. This is significantly more efficient than a naive recursive
+    /// approach that would allocate O(n) temporary sentinels.
+    ///
     /// # Example
     ///
     /// ```
@@ -343,37 +360,127 @@ impl<T> PieList<T> {
     where
         F: FnMut(&T, &T) -> cmp::Ordering,
     {
-        // This public method is a wrapper that calls the recursive helper.
-        // It allows the user to pass the closure by value, which is ergonomic.
-        self.sort_recursive(pool, &mut compare);
-    }
-
-    /// The internal recursive implementation of merge sort.
-    fn sort_recursive<F>(&mut self, pool: &mut ElemPool<T>, compare: &mut F)
-    where
-        F: FnMut(&T, &T) -> cmp::Ordering,
-    {
         // A list of 0 or 1 elements is already sorted.
         if self.len() < 2 {
             return;
         }
-        // Find the middle of the list to split it.
-        let mid_len = self.len() / 2;
-        let mut split_node = pool.next(self.sentinel);
-        for _ in 0..mid_len {
-            split_node = pool.next(split_node);
+
+        // Bottom-up iterative merge sort using a stack of sorted runs.
+        // Each slot i holds a sorted run of size 2^i, or is empty.
+        // This limits allocations to O(log n) temporary sentinels that are reused.
+        // 64 slots can handle lists up to 2^64 elements (practically unlimited).
+        const MAX_STACK_SIZE: usize = 64;
+        let mut stack: [Option<PieList<T>>; MAX_STACK_SIZE] = core::array::from_fn(|_| None);
+
+        // Pre-allocate sentinel nodes for the stack slots we'll need.
+        // For a list of length n, we need at most ceil(log2(n)) + 1 sentinels.
+        let needed_sentinels = (usize::BITS - self.len().leading_zeros()) as usize;
+        let mut temp_sentinels: alloc::vec::Vec<Index<T>> = alloc::vec::Vec::with_capacity(needed_sentinels);
+        for _ in 0..needed_sentinels {
+            let sentinel = pool.index_new().expect("Pool failed to allocate temp sentinel");
+            let sentinel = pool.index_make_sentinel(sentinel).expect("Failed to make sentinel");
+            temp_sentinels.push(sentinel);
         }
-        // Split the list. `self` becomes the right half, `left` gets the front elements.
-        let mut left = self.split_off(split_node, mid_len, pool).unwrap();
-        // Recursively sort both halves.
-        self.sort_recursive(pool, compare);
-        left.sort_recursive(pool, compare);
-        // Merge the sorted `self` (right half) into `left`, making `left` the final
-        // sorted list. We use `mem::replace` to move `self` into the function call.
-        let dummy_self = mem::replace(self, PieList::new(pool));
-        left.merge(dummy_self, pool, compare);
-        // Move the final sorted list from `left` back into `self`.
-        *self = left;
+        let mut next_sentinel_idx = 0;
+
+        // Process each element as a run of size 1.
+        while !self.is_empty() {
+            // Pop the front element into a new single-element run.
+            let front_node = pool.next(self.sentinel);
+            pool.index_linkout(front_node).unwrap();
+            self.len -= 1;
+
+            // Get or reuse a sentinel for this new run.
+            let run_sentinel = if next_sentinel_idx < temp_sentinels.len() {
+                let s = temp_sentinels[next_sentinel_idx];
+                next_sentinel_idx += 1;
+                s
+            } else {
+                // Fallback: allocate a new sentinel if we somehow need more.
+                let s = pool.index_new().expect("Pool failed to allocate sentinel");
+                pool.index_make_sentinel(s).expect("Failed to make sentinel")
+            };
+
+            // Create a run containing just this one element.
+            pool.index_link_after(front_node, run_sentinel).unwrap();
+            let mut run = PieList {
+                sentinel: run_sentinel,
+                len: 1,
+                #[cfg(debug_assertions)]
+                check_leak: false,
+            };
+
+            // Cascade merges: while the current stack slot is occupied,
+            // merge and move up to the next slot.
+            // For stability: `existing` contains earlier elements, `run` contains later elements.
+            // Merge `run` INTO `existing` so that `existing` elements come first when equal.
+            let mut slot = 0;
+            while slot < MAX_STACK_SIZE {
+                match stack[slot].take() {
+                    None => {
+                        // Empty slot - place our run here.
+                        stack[slot] = Some(run);
+                        break;
+                    }
+                    Some(mut existing) => {
+                        // Merge the later run into the earlier existing run for stability.
+                        // Return the current run's sentinel to the reuse pool.
+                        let old_sentinel = run.sentinel;
+                        existing.merge(run, pool, &mut compare);
+                        run = existing;
+                        // Mark the old sentinel as reusable by resetting it.
+                        let _ = pool.get_mut(old_sentinel).map(|e| e.new_links(old_sentinel, old_sentinel));
+                        temp_sentinels.push(old_sentinel);
+                        slot += 1;
+                    }
+                }
+            }
+        }
+
+        // Merge all remaining runs in the stack into the final sorted list.
+        // Higher slots contain elements that were processed earlier (they've been
+        // sitting in the stack longer). Iterate from high to low so that we
+        // accumulate earlier elements first, then merge later elements into them.
+        let mut result: Option<PieList<T>> = None;
+        for slot in (0..MAX_STACK_SIZE).rev() {
+            if let Some(run) = stack[slot].take() {
+                match result.take() {
+                    None => result = Some(run),
+                    Some(mut existing) => {
+                        // `existing` (from higher slots) contains earlier elements,
+                        // `run` (from lower slots) contains later elements.
+                        existing.merge(run, pool, &mut compare);
+                        result = Some(existing);
+                    }
+                }
+            }
+        }
+
+        // Move the result back into self.
+        if let Some(sorted) = result {
+            // Swap the sentinel and length, then clean up our temporary sentinel.
+            let old_sentinel = self.sentinel;
+
+            // Move data from sorted into self.
+            self.sentinel = sorted.sentinel;
+            self.len = sorted.len;
+
+            // Return the old sentinel to the free list.
+            let _ = pool.data_swap(old_sentinel, None);
+            let _ = pool.index_del(old_sentinel);
+        }
+
+        // Clean up any remaining temporary sentinels.
+        for &sentinel in &temp_sentinels {
+            // Only delete if not currently in use (i.e., not self.sentinel).
+            if sentinel != self.sentinel {
+                let _ = pool.data_swap(sentinel, None);
+                let _ = pool.index_del(sentinel);
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        { self.check_leak = true; }
     }
 
     /// Merges two sorted lists. `self` is assumed to be one sorted list,

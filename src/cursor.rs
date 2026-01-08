@@ -76,6 +76,7 @@ impl<'a, T> Cursor<'a, T> {
     /// assert_eq!(cursor.index(), None);
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn index(&self) -> Option<usize> {
         if self.current == self.list.sentinel {
             None
@@ -98,6 +99,7 @@ impl<'a, T> Cursor<'a, T> {
     /// assert_eq!(cursor.peek(&pool), Some(&10));
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn peek<'p>(&self, pool: &'p ElemPool<T>) -> Option<&'p T> {
         if self.current == self.list.sentinel {
             None
@@ -123,6 +125,7 @@ impl<'a, T> Cursor<'a, T> {
     /// assert!(cursor.peek(&pool).is_none());
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn move_next(&mut self, pool: &ElemPool<T>) {
         // Case 1: Already at "After End" -> No-op
         if self.current == self.list.sentinel && self.logical_index == self.list.len() {
@@ -165,6 +168,7 @@ impl<'a, T> Cursor<'a, T> {
     /// assert!(cursor.peek(&pool).is_none());
     /// # list.clear(&mut pool);
     /// ```
+    #[inline]
     pub fn move_prev(&mut self, pool: &ElemPool<T>) {
         // Case 1: Already at "Before Start" -> No-op
         if self.current == self.list.sentinel && self.logical_index == usize::MAX {

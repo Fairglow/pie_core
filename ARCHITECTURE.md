@@ -51,22 +51,67 @@ pub struct Index<T> {
 2. **Sentinel Value Pattern**: `Index::NONE` uses `slot = u32::MAX` instead of
    `Option<Index>`. This avoids double-wrapping and keeps the type simple.
 
-3. **Generation Encoding**: The `vers` field contains both generation counter
-   (30 bits) and element state (2 bits). See "State Machine" below.
+3. **Generation Encoding**: The `vers` field uses the `Generation` type which
+   encapsulates both generation counter (30 bits) and element state (2 bits).
+   See "State Machine" below.
 
 4. **8-byte Size**: Compact enough to store in struct fields, pass by value,
    and use as HashMap keys efficiently.
 
-### `Elem<T>` — The Node Structure
+### `Elem` — Generic Node Structure
 
 ```rust
 pub struct Elem<T> {
-    next: Index<T>,           // 8 bytes
-    prev: Index<T>,           // 8 bytes
-    vers: u32,                // 4 bytes (generation + state)
-    data: MaybeUninit<T>,     // sizeof(T) bytes
+    next: Slot,             // 4 bytes - optional slot index of next element
+    prev: Slot,             // 4 bytes - optional slot index of prev element
+    vers: Generation,       // 4 bytes - generation counter + state bits
+    data: MaybeUninit<T>,   // Inline user data
+}
+// Total: 12 bytes + size_of::<T>()
+```
+
+**Helper Types:**
+
+- **`Slot`**: A compact optional slot index (`u32::MAX` = none). Provides an
+  ergonomic `get() -> Option<usize>` API for safe indexing with the `?` operator.
+  Same size as `u32` (4 bytes) with no overhead.
+
+- **`Generation`**: Encapsulates the 30-bit generation counter and 2-bit state.
+  Provides type-safe state transitions and comparison methods. Uses
+  `#[repr(transparent)]` to guarantee 4-byte size.
+
+**Internal Storage Design:**
+
+The pool stores elements in a single contiguous `Vec`. This means metadata and
+data are stored together in memory (Array-of-Structures).
+
+```rust
+pub struct ElemPool<T> {
+    elems: Vec<Elem<T>>,       // Contiguous elements
+    freed: usize,              // Count of free elements
+    used: usize,               // Count of used elements
 }
 ```
+
+Earlier versions of `pie_core` experimented with a Struct-of-Arrays (SoA) layout
+where metadata and data were split into separate vectors. This was found to
+**degrade performance significantly (-25% to -85%)** for insert/modify operations
+due to poor cache locality (accessing a node requires touching two distinct memory
+regions). The current design ensures that accessing a node's links also loads
+its data into the cache line.
+
+**Internal Links Use Slot Type:**
+
+The internal `next`/`prev` fields use the `Slot` type, which wraps a `u32` slot
+index with `u32::MAX` representing "no link" (similar to `Option<u32>` but with
+no size overhead). This design:
+
+1. Provides ergonomic `Option`-like API via `slot.get() -> Option<usize>`
+2. Enables the `?` operator for clean early-return patterns
+3. Uses only 4 bytes per link (same as raw `u32`)
+
+The external API still uses `Index<T>` with full generational protection. The
+conversion happens at the `ElemPool` method boundary.
 
 **Why Intrusive Links?**
 
@@ -144,9 +189,10 @@ This separation is crucial for:
 
 ```rust
 pub struct ElemPool<T> {
-    elems: Vec<Elem<T>>,  // Contiguous storage
-    freed: usize,          // Count of free elements
-    used: usize,           // Count of data-holding elements
+    elems: Vec<Elem>,          // Element metadata (12 bytes each)
+    data: Vec<MaybeUninit<T>>, // User data (parallel array)
+    freed: usize,              // Count of free elements
+    used: usize,               // Count of data-holding elements
 }
 ```
 
@@ -332,7 +378,9 @@ list.remap(&remap);  // Update sentinel handle
 src/
 ├── lib.rs          # Public API exports, feature flags
 ├── index.rs        # Index<T> type and operations
-├── elem.rs         # Elem<T> node structure, state machine
+├── generation.rs   # Generation type (counter + state encoding)
+├── slot.rs         # Slot type (optional slot index)
+├── elem.rs         # Elem node structure, state machine
 ├── pool.rs         # ElemPool<T> arena allocator
 ├── list.rs         # PieList<T> and iterators
 ├── heap.rs         # FibHeap<K, V> implementation
@@ -361,17 +409,22 @@ All unsafe blocks are:
 
 ## Performance Characteristics
 
-### Memory Layout
+### Memory Layout (Single Vector)
 
 ```
 ElemPool<u64>:
-┌────────────────────────────────────────────────────┐
-│ Vec<Elem<u64>> (contiguous, cache-friendly)        │
-├────────────────────────────────────────────────────┤
-│ Elem<u64>: next(8) + prev(8) + vers(4) + data(8)   │
-│            = 28 bytes, padded to 32 bytes          │
-└────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ Vec<Elem<u64>> (12 + 8 = 20 bytes per element)               │
+│ ┌──────────────────────────────────────────────────────────┐ │
+│ │ Next(4) + Prev(4) + Vers(4) + Data(8) = 20 bytes         │ │
+│ └──────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+Benefits of this layout:
+- **Spatial Locality**: Metadata and data are always loaded together.
+- **Prefetching**: Accessing a node automatically prefetches its data.
+- **Simplicity**: No need to manage two parallel vectors.
 
 ### Operation Costs
 

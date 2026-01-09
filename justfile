@@ -3,14 +3,14 @@ alias lib := release
 alias doc := documentation
 alias old := outdated
 
-all: build examples release
-
 bench: table
     cargo +nightly bench --features petgraph,bench-nightly
     target/release/bench-table
 
 build:
     cargo build && cargo clippy
+
+build-all: build examples release
 
 dijkstra:
     cargo run -p dijkstra --release

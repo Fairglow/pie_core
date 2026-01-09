@@ -41,26 +41,60 @@ assert_eq!(pool.len(), 3); // The pool tracks total items.
 
 The central design of `pie_core` is to move memory allocation away from individual nodes and into a centralized `ElemPool`.
 
-1.  **Arena (Pool) Allocation**: Instead of making a heap allocation for every new element, all elements are stored contiguously in a `Vec` inside the `ElemPool`. This has two major benefits:
-  - **Cache Locality**: Elements are closer together in memory, which can lead to fewer cache misses and significantly faster traversal and iteration.
-  - **Reduced Allocator Pressure**: It avoids frequent calls to the global allocator, which can be a bottleneck in performance-critical applications.
-2.  **Typed Indices**: Nodes are referenced by a type-safe `Index<T>` instead of raw pointers or `usize`. This leverages Rust's type system to prevent indices from one pool being accidentally used with another.
-3.  **Multi-Structure, Single-Pool**: A single `ElemPool<T>` can manage the memory for thousands of `PieList<T>` (or `FibHeap`) instances. This is highly efficient for applications that create and destroy many short-lived data structures.
-4.  **Views and Cursors for a Safe, Powerful API**: The library provides several ways to interact with lists, each designed for a specific purpose:
-  - **Views (`PieView` and `PieViewMut`)**: For convenience, `pie_core` offers view structs. `PieView` provides a simplified, read-only API for iteration, while `PieViewMut` allows for common list modifications. They bundle a list handle and a pool reference, reducing API verbosity for standard operations.
-  - **Cursors (`Cursor` and `CursorMut`)**: For advanced operations, the library uses a cursor-based API. A `Cursor` provides read-only navigation, while a `CursorMut` allows for powerful, O(1) structural mutations like splitting a list at a specific point or splicing another list into it. The design correctly models Rust's ownership rules, ensuring that a `CursorMut` exclusively locks its own list from other modifications but leaves the shared pool available for other lists to use.
+1. **Arena (Pool) Allocation**: Instead of making a heap allocation for every new element, all elements
+  are stored contiguously in a `Vec` inside the `ElemPool`. This has two major benefits:
+  - **Cache Locality**: Elements are closer together in memory, which can lead to fewer cache misses and
+    significantly faster traversal and iteration.
+  - **Reduced Allocator Pressure**: It avoids frequent calls to the global allocator, which can be a
+    bottleneck in performance-critical applications.
+2. **Generational Indices**: Nodes are referenced by a type-safe `Index<T>` that combines a slot number
+  with a generation counter. This provides ABA-problem protection—when an element is freed and its slot reused, the old index becomes "stale" and safely returns an error instead of pointing to the wrong data. This is much safer than raw pointers or plain `usize` indices.
+3. **Multi-Structure, Single-Pool**: A single `ElemPool<T>` can manage the memory for thousands of
+  `PieList<T>` (or `FibHeap`) instances. This is highly efficient for applications that create and destroy many short-lived data structures.
+4. **Views and Cursors for a Safe, Powerful API**: The library provides several ways to interact with
+  lists, each designed for a specific purpose:
+  - **Views (`PieView` and `PieViewMut`)**: For convenience, `pie_core` offers view structs. `PieView`
+    provides a simplified, read-only API for iteration, while `PieViewMut` allows for common list modifications. They bundle a list handle and a pool reference, reducing API verbosity for standard operations.
+  - **Cursors (`Cursor` and `CursorMut`)**: For advanced operations, the library uses a cursor-based API.
+    A `Cursor` provides read-only navigation, while a `CursorMut` allows for powerful, O(1) structural mutations like splitting a list at a specific point or splicing another list into it. The design correctly models Rust's ownership rules, ensuring that a `CursorMut` exclusively locks its own list from other modifications but leaves the shared pool available for other lists to use.
 
 ## **When is `pie_core` a Good Choice?**
 
 This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It excels in specific contexts:
 
-- **Performance-Critical Loops**: In game development, simulations, or real-time systems where you frequently add, remove, or reorder items in the middle of a large collection.
-- **Efficient Priority Queues**: When you need a priority queue that supports an efficient O(1) amortized `decrease_key` operation, which is common in graph algorithms like Dijkstra's or Prim's.
-- **Managing Many Small Structures**: When you need to manage a large number of independent lists or heaps, sharing a single `ElemPool` is far more memory-efficient than having each structure handle its own allocations.
-- **Stable Indices**: The indices used by `pie_core` are stable; unlike a `Vec`, inserting or removing elements does not invalidate the indices of other elements. Only shrinking the pool invalidates some of them.
-- Embedded and `no_std` Environments: The crate supports `no_std` (requiring `extern crate alloc`), making it ideal for bare-metal or embedded systems where the standard library is unavailable but dynamic allocation is permitted.
+### ✅ Use `pie_core` When...
+
+- **Repeated Middle Insertions**: Inserting 100 elements at random positions into a 100k-element list: PieList is **415x faster** than Vec (O(n) total vs O(n²)).
+- **O(1) Splice/Split Operations**: Merging lists at the front: PieList is **1300x faster** than Vec at large sizes.
+- **Decrease-Key Priority Queues**: When you need a priority queue with efficient `decrease_key` for Dijkstra's, Prim's, or A* algorithms.
+- **Managing Many Small Structures**: When you need many independent lists sharing a single memory pool.
+- **Stable Indices**: Indices survive insertions/removals (only `shrink_to_fit()` invalidates them).
+- **`no_std` Environments**: Supports embedded systems (requires `extern crate alloc`).
+
+### ❌ Prefer `Vec` or Standard Collections When...
+
+- **Sequential Iteration**: Vec is **25x faster** for summing all elements (cache locality).
+- **Random Access by Index**: Vec is **2400x faster** for random lookups (O(1) vs O(n)).
+- **Sorting**: Vec's pdqsort is **10x faster** than PieList's merge sort.
+- **Simple Append-Only Workloads**: Vec has **2.6x less overhead** for push_back.
+- **Simple Priority Queues**: If you don't need `decrease_key`, use `BinaryHeap`.
+
+### Benchmark Summary
+
+| Operation | Best Choice | Speedup |
+|-----------|-------------|--------|
+| Multi-insert at random positions | PieList | 415x faster than Vec |
+| Splice at front | PieList | 1300x faster than Vec |
+| Push to front | PieList | 7x faster than Vec |
+| Iterate all elements | Vec | 25x faster than PieList |
+| Random index access | Vec | 2400x faster than PieList |
+| Sort | Vec | 10x faster than PieList |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology and results.
 
 **Important Note on `T` Size**: `pie_core` stores the data `T` (or `K` and `V` for the heap) directly inside the node structure. This design is optimized for smaller types (`Copy` types, numbers, small structs). If the data is very large, the increased size of each element can reduce the cache-locality benefits, as fewer elements will fit into a single cache line.
+
+**Performance Disclaimer**: All benchmark figures presented here are derived from synthetic tests on a specific hardware configuration. They are intended only as a rough indication of relative performance probability. Real-world results will vary based on your CPU, cache hierarchy, memory speed, and specific usage patterns. Always profile your own application to make informed optimization decisions.
 
 ## **Strengths and Weaknesses**
 
@@ -78,6 +112,7 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 - **Memory Growth**: The pool's capacity only ever grows. Memory is reused via an internal free list, but the underlying `Vec` does not shrink automatically. The user is responsible for shrinking the pool at opportune moments, if necessary.
 - **Handle Invalidation on Shrink**: Calling `shrink_to_fit()` on a pool invalidates all existing `Index<T>` and `FibHandle` values. The operation returns a remapping table, and users **must** call `remap()` on all active lists and update any stored handles. Failure to do so leads to stale index errors.
 - **Non-RAII Cleanup**: Unlike standard collections, dropping a `PieList` does not deallocate its contents. Users must manually call `clear()` or `drain()` to return memory to the pool. **In debug builds, dropping a non-empty list will panic** to help catch memory leaks during development. This check is disabled in release builds.
+- **Generational Overhead**: The safe `Index<T>` system requires a generation check on every access to prevent use-after-free bugs. This adds a small number of CPU instructions compared to raw pointer dereferencing, resulting in a minor throughput loss (approx. 3-6% in tight loops) compared to unsafe alternatives.
 
 ## Features
 

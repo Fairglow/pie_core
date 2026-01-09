@@ -65,6 +65,7 @@ extern crate alloc;
 
 use crate::{Cursor, CursorMut, ElemPool, Index, IndexError, IndexMap,
             PieView, PieViewMut};
+use crate::slot::Slot;
 use core::{cmp, marker::PhantomData};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
@@ -204,7 +205,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        pool.data(pool.next(self.sentinel))
+        let front_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+        pool.data_at(front_slot)
     }
 
     /// Provides a mutable reference to the front element's data, or `None` if empty.
@@ -216,8 +218,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        let front_idx = pool.next(self.sentinel);
-        pool.data_mut(front_idx)
+        let front_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+        pool.data_at_mut(front_slot)
     }
 
     /// Provides a reference to the back element's data, or `None` if the list is empty.
@@ -229,7 +231,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        pool.data(pool.prev(self.sentinel))
+        let back_slot = pool.prev_slot(self.sentinel.slot as usize).unwrap();
+        pool.data_at(back_slot)
     }
 
     /// Provides a mutable reference to the back element's data, or `None` if empty.
@@ -241,8 +244,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        let back_idx = pool.prev(self.sentinel);
-        pool.data_mut(back_idx)
+        let back_slot = pool.prev_slot(self.sentinel.slot as usize).unwrap();
+        pool.data_at_mut(back_slot)
     }
 
     /// Adds an element to the front of the list.
@@ -286,7 +289,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        let front_idx = pool.next(self.sentinel);
+        let front_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+        let front_idx = pool.index_from_slot(front_slot);
         pool.index_linkout(front_idx).ok()?;
         self.len -= 1;
         let data = pool.data_swap(front_idx, None);
@@ -305,7 +309,8 @@ impl<T> PieList<T> {
         if self.is_empty() {
             return None;
         }
-        let back_idx = pool.prev(self.sentinel);
+        let back_slot = pool.prev_slot(self.sentinel.slot as usize).unwrap();
+        let back_idx = pool.index_from_slot(back_slot);
         pool.index_linkout(back_idx).ok()?;
         self.len -= 1;
         let data = pool.data_swap(back_idx, None);
@@ -363,21 +368,21 @@ impl<T> PieList<T> {
     /// assert_eq!(pool.len(), 0); // All elements returned to pool
     /// ```
     pub fn drain<'a>(&'a mut self, pool: &'a mut ElemPool<T>) -> Drain<'a, T> {
-        let front = pool.next(self.sentinel);
-        let back = pool.prev(self.sentinel);
+        let sentinel_slot = self.sentinel.slot as usize;
+        let front_slot = pool.next_slot(sentinel_slot).unwrap();
+        let back_slot = pool.prev_slot(sentinel_slot).unwrap();
         let len = self.len;
 
         // Immediately clear the list's own state. The Drain iterator now owns
         // the responsibility of cleaning up the nodes.
-        pool.get_mut(self.sentinel)
-            .unwrap()
-            .new_links(self.sentinel, self.sentinel);
+        let sentinel_slot_val = Slot::new(self.sentinel.slot);
+        pool.elem_mut(sentinel_slot).set_links(sentinel_slot_val, sentinel_slot_val);
         self.len = 0;
 
         Drain {
             pool,
-            front,
-            back,
+            front_slot,
+            back_slot,
             len,
             _phantom: PhantomData,
         }
@@ -445,7 +450,8 @@ impl<T> PieList<T> {
         // Process each element as a run of size 1.
         while !self.is_empty() {
             // Pop the front element into a new single-element run.
-            let front_node = pool.next(self.sentinel);
+            let front_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+            let front_node = pool.index_from_slot(front_slot);
             pool.index_linkout(front_node).unwrap();
             self.len -= 1;
 
@@ -488,7 +494,8 @@ impl<T> PieList<T> {
                         existing.merge(run, pool, &mut compare);
                         run = existing;
                         // Mark the old sentinel as reusable by resetting it.
-                        let _ = pool.get_mut(old_sentinel).map(|e| e.new_links(old_sentinel, old_sentinel));
+                        let old_slot = Slot::new(old_sentinel.slot);
+                        let _ = pool.get_elem_mut(old_sentinel).map(|e| e.set_links(old_slot, old_slot));
                         temp_sentinels.push(old_sentinel);
                         slot += 1;
                     }
@@ -559,28 +566,30 @@ impl<T> PieList<T> {
             return;
         }
         // The current node in `self` that we are comparing against.
-        let mut current_self_node = pool.next(self.sentinel);
+        let mut current_self_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
         // Loop as long as there are elements to compare in both lists.
-        while !other.is_empty() && current_self_node != self.sentinel {
+        while !other.is_empty() && current_self_slot != self.sentinel.slot as usize {
             // These unwraps are safe because the loop conditions guarantee both lists
-            // have at least one element and that current_self_node is not the sentinel.
-            let self_data = pool.data(current_self_node).unwrap();
+            // have at least one element and that current_self_slot is not the sentinel.
+            let self_data = pool.data_at(current_self_slot).unwrap();
             let other_data = other.front(pool).unwrap();
             // If the `other` node is smaller or equal, move it into `self`.
             // The equality check is crucial for maintaining a stable sort.
             if compare(other_data, self_data) == cmp::Ordering::Less {
-                let node_to_move = pool.next(other.sentinel);
+                let node_to_move_slot = pool.next_slot(other.sentinel.slot as usize).unwrap();
+                let node_to_move = pool.index_from_slot(node_to_move_slot);
                 // Unlink the node from the front of `other`.
                 pool.index_linkout(node_to_move).unwrap();
                 other.len -= 1;
                 // Link it into `self` right before the current node.
+                let current_self_node = pool.index_from_slot(current_self_slot);
                 pool.index_link_before(node_to_move, current_self_node)
                     .unwrap();
                 self.len += 1;
             } else {
                 // The `self` node is smaller, so it's in the correct place.
                 // Advance to the next node in `self` for the next comparison.
-                current_self_node = pool.next(current_self_node);
+                current_self_slot = pool.next_slot(current_self_slot).unwrap();
             }
         }
         // If `other` still has elements, they are all larger than any in `self`.
@@ -593,6 +602,8 @@ impl<T> PieList<T> {
     /// Splits the list before the given `split_node`. The original list (`self`) will
     /// contain all elements from `split_node` onwards, and a new list containing
     /// elements before `split_node` is returned.
+    ///
+    /// Uses slot-based operations for efficiency.
     pub(crate) fn split_off(
         &mut self,
         split_node: Index<T>,
@@ -604,23 +615,34 @@ impl<T> PieList<T> {
             return Ok(PieList::new(pool));
         }
         let mut new_list = PieList::new(pool);
-        let original_front = pool.next(self.sentinel);
-        let element_before_split = pool.prev(split_node);
-        // Form the new list: (new_sentinel) <-> original_front <-> ... <-> element_before_split <-> (new_sentinel)
-        pool.get_mut(new_list.sentinel)?
-            .new_links(element_before_split, original_front);
-        pool.get_mut(original_front)?.new_prev(new_list.sentinel);
-        pool.get_mut(element_before_split)?
-            .new_next(new_list.sentinel);
+
+        // Use slot-based operations for efficiency
+        let self_sentinel_slot = self.sentinel.slot as usize;
+        let new_sentinel_slot = new_list.sentinel.slot as usize;
+        let split_slot = split_node.slot as usize;
+        let original_front_slot = pool.next_slot(self_sentinel_slot).unwrap();
+        let before_split_slot = pool.prev_slot(split_slot).unwrap();
+
+        // Form the new list: (new_sentinel) <-> original_front <-> ... <-> before_split <-> (new_sentinel)
+        pool.elem_mut(new_sentinel_slot).set_links(
+            Slot::new(before_split_slot as u32),
+            Slot::new(original_front_slot as u32)
+        );
+        pool.elem_mut(original_front_slot).prev = Slot::new(new_sentinel_slot as u32);
+        pool.elem_mut(before_split_slot).next = Slot::new(new_sentinel_slot as u32);
+
         // Form the now-shortened original list: (self.sentinel) <-> split_node <-> ...
-        pool.get_mut(self.sentinel)?.new_next(split_node);
-        pool.get_mut(split_node)?.new_prev(self.sentinel);
+        pool.elem_mut(self_sentinel_slot).next = Slot::new(split_slot as u32);
+        pool.elem_mut(split_slot).prev = Slot::new(self_sentinel_slot as u32);
+
         self.len = original_len - split_len;
         new_list.len = split_len;
         Ok(new_list)
     }
 
     /// Splices the `other` list into `self` before `insertion_node`.
+    ///
+    /// This is an O(1) operation that uses slot-based linking for efficiency.
     pub(crate) fn splice(
         &mut self,
         insertion_node: Index<T>,
@@ -628,18 +650,31 @@ impl<T> PieList<T> {
         pool: &mut ElemPool<T>,
     ) -> Result<(), IndexError> {
         let other_len = other.len;
-        let other_sentinel = other.sentinel;
-        let element_before_cursor = pool.prev(insertion_node);
-        let other_first = pool.next(other_sentinel);
-        let other_last = pool.prev(other_sentinel);
-        pool.get_mut(element_before_cursor)?.new_next(other_first);
-        pool.get_mut(other_first)?.new_prev(element_before_cursor);
-        pool.get_mut(insertion_node)?.new_prev(other_last);
-        pool.get_mut(other_last)?.new_next(insertion_node);
+        if other_len == 0 {
+            return Ok(());
+        }
+
+        // Use slot-based operations for efficiency (no generation lookups)
+        let insertion_slot = insertion_node.slot as usize;
+        let other_sentinel_slot = other.sentinel.slot as usize;
+        let before_slot = pool.prev_slot(insertion_slot).unwrap();
+        let other_first_slot = pool.next_slot(other_sentinel_slot).unwrap();
+        let other_last_slot = pool.prev_slot(other_sentinel_slot).unwrap();
+
+        // Link: before -> other_first
+        pool.elem_mut(before_slot).next = Slot::new(other_first_slot as u32);
+        pool.elem_mut(other_first_slot).prev = Slot::new(before_slot as u32);
+
+        // Link: other_last -> insertion_node
+        pool.elem_mut(other_last_slot).next = Slot::new(insertion_slot as u32);
+        pool.elem_mut(insertion_slot).prev = Slot::new(other_last_slot as u32);
+
+        // Reset other's sentinel to point to itself
+        let other_sentinel_slot_val = Slot::new(other_sentinel_slot as u32);
+        pool.elem_mut(other_sentinel_slot).set_links(other_sentinel_slot_val, other_sentinel_slot_val);
+
         self.len += other_len;
         other.len = 0;
-        pool.get_mut(other_sentinel)?
-            .new_links(other_sentinel, other_sentinel);
         Ok(())
     }
 
@@ -678,18 +713,23 @@ impl<T> PieList<T> {
         pool: &mut ElemPool<T>,
     ) -> Result<(), IndexError> {
         // Find the first element of 'self'
-        let first_elem = pool.next(self.sentinel);
+        // Use slot-based access for efficiency
+        let sentinel_slot = self.sentinel.slot as usize;
+        let first_slot = pool.next_slot(sentinel_slot).unwrap();
         // Splice the 'other' list in just before 'self's first element.
-        self.splice(first_elem, other, pool)
+        self.splice(pool.index_from_slot(first_slot), other, pool)
     }
 
     /// Returns an iterator that provides immutable references to the elements
     /// from front to back.
+    ///
+    /// Uses slot-based traversal for maximum performance.
     pub fn iter<'a>(&self, pool: &'a ElemPool<T>) -> Iter<'a, T> {
+        let sentinel_slot = self.sentinel.slot as usize;
         Iter {
             pool,
-            front: pool.next(self.sentinel),
-            back: pool.prev(self.sentinel),
+            front_slot: pool.next_slot(sentinel_slot).unwrap(),
+            back_slot: pool.prev_slot(sentinel_slot).unwrap(),
             len: self.len,
             _phantom: PhantomData,
         }
@@ -697,13 +737,16 @@ impl<T> PieList<T> {
 
     /// Returns an iterator that provides mutable references to the elements
     /// from front to back.
+    ///
+    /// Uses slot-based traversal for maximum performance.
     pub fn iter_mut<'a>(&mut self, pool: &'a mut ElemPool<T>) -> IterMut<'a, T> {
-        let front = pool.next(self.sentinel);
-        let back = pool.prev(self.sentinel);
+        let sentinel_slot = self.sentinel.slot as usize;
+        let front_slot = pool.next_slot(sentinel_slot).unwrap();
+        let back_slot = pool.prev_slot(sentinel_slot).unwrap();
         IterMut {
             pool,
-            front,
-            back,
+            front_slot,
+            back_slot,
             len: self.len,
             _phantom: PhantomData,
         }
@@ -729,7 +772,8 @@ impl<T> PieList<T> {
     ///
     /// The cursor allows for bidirectional navigation.
     pub fn cursor<'a>(&'a self, pool: &'a ElemPool<T>) -> Cursor<'a, T> {
-        let first_elem = pool.next(self.sentinel);
+        let first_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+        let first_elem = pool.index_from_slot(first_slot);
         Cursor::new(self, first_elem, 0)
     }
 
@@ -748,18 +792,17 @@ impl<T> PieList<T> {
         if index >= self.len {
             return Err(IndexError::IndexOutOfBounds);
         }
-        let mut current_idx;
+        let mut current_slot = self.sentinel.slot as usize;
         if index < self.len / 2 {
-            current_idx = self.sentinel;
             for _ in 0..=index {
-                current_idx = pool.next(current_idx);
+                current_slot = pool.next_slot(current_slot).unwrap();
             }
         } else {
-            current_idx = self.sentinel;
             for _ in 0..(self.len - index) {
-                current_idx = pool.prev(current_idx);
+                current_slot = pool.prev_slot(current_slot).unwrap();
             }
         }
+        let current_idx = pool.index_from_slot(current_slot);
         Ok(Cursor::new(self, current_idx, index))
     }
 
@@ -768,7 +811,8 @@ impl<T> PieList<T> {
     /// The cursor provides an efficient API for arbitrary insertion, deletion,
     /// and moving through the list.
     pub fn cursor_mut<'a>(&'a mut self, pool: &mut ElemPool<T>) -> CursorMut<'a, T> {
-        let first_elem = pool.next(self.sentinel);
+        let first_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
+        let first_elem = pool.index_from_slot(first_slot);
         CursorMut::new(self, first_elem, 0)
     }
 
@@ -789,20 +833,19 @@ impl<T> PieList<T> {
             return Err(IndexError::IndexOutOfBounds);
         }
         // To be efficient, we traverse from the closer end of the list.
-        let mut current_idx;
+        let mut current_slot = self.sentinel.slot as usize;
         if index < self.len / 2 {
             // Traverse from the front
-            current_idx = self.sentinel;
             for _ in 0..=index {
-                current_idx = pool.next(current_idx);
+                current_slot = pool.next_slot(current_slot).unwrap();
             }
         } else {
             // Traverse from the back
-            current_idx = self.sentinel;
             for _ in 0..(self.len - index) {
-                current_idx = pool.prev(current_idx);
+                current_slot = pool.prev_slot(current_slot).unwrap();
             }
         }
+        let current_idx = pool.index_from_slot(current_slot);
         Ok(CursorMut::new(self, current_idx, index))
     }
 
@@ -825,10 +868,15 @@ impl<T> PieList<T> {
 // --- Iterators ---
 
 /// An immutable iterator over the elements of a `PieList`.
+///
+/// Uses slot-based traversal for maximum performance (single array access
+/// per element instead of two).
 pub struct Iter<'a, T: 'a> {
     pool: &'a ElemPool<T>,
-    front: Index<T>,
-    back: Index<T>,
+    /// Current front slot (raw index for fast traversal)
+    front_slot: usize,
+    /// Current back slot (raw index for fast traversal)
+    back_slot: usize,
     len: usize,
     _phantom: PhantomData<&'a T>,
 }
@@ -836,26 +884,28 @@ pub struct Iter<'a, T: 'a> {
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
-        let current = self.front;
-        self.front = self.pool.next(current);
+        let current_slot = self.front_slot;
+        self.front_slot = self.pool.next_slot(current_slot).unwrap();
         self.len -= 1;
-        self.pool.data(current)
+        self.pool.data_at(current_slot)
     }
 }
 
 impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
-        let current = self.back;
-        self.back = self.pool.prev(current);
+        let current_slot = self.back_slot;
+        self.back_slot = self.pool.prev_slot(current_slot).unwrap();
         self.len -= 1;
-        self.pool.data(current)
+        self.pool.data_at(current_slot)
     }
 }
 
@@ -866,10 +916,12 @@ impl<'a, T> ExactSizeIterator for Iter<'a, T> {
 }
 
 /// A mutable iterator over the elements of a `PieList`.
+///
+/// Uses slot-based traversal for maximum performance.
 pub struct IterMut<'a, T: 'a> {
     pool: &'a mut ElemPool<T>,
-    front: Index<T>,
-    back: Index<T>,
+    front_slot: usize,
+    back_slot: usize,
     len: usize,
     _phantom: PhantomData<&'a mut T>,
 }
@@ -877,12 +929,13 @@ pub struct IterMut<'a, T: 'a> {
 impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
-        let current = self.front;
-        self.front = self.pool.next(current);
+        let current_slot = self.front_slot;
+        self.front_slot = self.pool.next_slot(current_slot).unwrap();
         self.len -= 1;
         // SAFETY: The lifetime 'a ties the output reference to the exclusive
         // borrow of the pool. The iterator's internal logic guarantees that we
@@ -890,23 +943,24 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         // We convert the mutable reference to a raw pointer to bypass the borrow
         // checker's limitation on splitting borrows within a single method call.
         let pool_ptr = self.pool as *mut ElemPool<T>;
-        unsafe { (*pool_ptr).data_mut(current) }
+        unsafe { (*pool_ptr).data_at_mut(current_slot) }
     }
 }
 
 impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
-        let current = self.back;
-        self.back = self.pool.prev(current);
+        let current_slot = self.back_slot;
+        self.back_slot = self.pool.prev_slot(current_slot).unwrap();
         self.len -= 1;
         // SAFETY: Same reasoning as in `next()`. The exclusive borrow on `self.pool`
         // and the iterator's logic ensure that we do not create aliased mutable
         // references.
         let pool_ptr = self.pool as *mut ElemPool<T>;
-        unsafe { (*pool_ptr).data_mut(current) }
+        unsafe { (*pool_ptr).data_at_mut(current_slot) }
     }
 }
 
@@ -921,11 +975,13 @@ impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
 /// This struct is created by the [`drain()`] method on [`PieList`].
 /// See its documentation for more.
 ///
+/// Uses slot-based traversal for efficient navigation.
+///
 /// [`drain()`]: PieList::drain
 pub struct Drain<'a, T: 'a> {
     pool: &'a mut ElemPool<T>,
-    front: Index<T>,
-    back: Index<T>,
+    front_slot: usize,
+    back_slot: usize,
     len: usize,
     _phantom: PhantomData<T>,
 }
@@ -933,18 +989,20 @@ pub struct Drain<'a, T: 'a> {
 impl<'a, T> Iterator for Drain<'a, T> {
     type Item = T;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
 
-        let current_idx = self.front;
-        self.front = self.pool.next(current_idx);
+        let current_slot = self.front_slot;
+        self.front_slot = self.pool.next_slot(current_slot).unwrap();
         self.len -= 1;
 
         // The drain constructor already unlinked the entire chain of nodes from
         // the list's sentinel, so we don't need to `index_linkout` here. We
         // just need to consume the chain and deallocate the nodes.
+        let current_idx = self.pool.index_from_slot(current_slot);
         let data = self.pool.data_swap(current_idx, None);
         self.pool.index_del(current_idx).unwrap();
 
@@ -953,15 +1011,17 @@ impl<'a, T> Iterator for Drain<'a, T> {
 }
 
 impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
         }
 
-        let current_idx = self.back;
-        self.back = self.pool.prev(current_idx);
+        let current_slot = self.back_slot;
+        self.back_slot = self.pool.prev_slot(current_slot).unwrap();
         self.len -= 1;
 
+        let current_idx = self.pool.index_from_slot(current_slot);
         let data = self.pool.data_swap(current_idx, None);
         self.pool.index_del(current_idx).unwrap();
 

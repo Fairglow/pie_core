@@ -7,23 +7,26 @@
 //!
 //! ## Memory Layout
 //!
+//! Each `Elem<T>` contains the element metadata (links + generation/state) and
+//! the user data inline, providing optimal cache locality:
+//!
 //! ```text
 //! ElemPool<T>
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │ elems: Vec<Elem<T>>                                         │
-//! │ ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐    │
-//! │ │  0  │  1  │  2  │  3  │  4  │  5  │  6  │  7  │  8  │    │
-//! │ │Free │ S₁  │ A   │ B   │ S₂  │ X   │ Y   │Free │Free │    │
-//! │ │Sent.│     │     │     │     │     │     │     │     │    │
-//! │ └─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘    │
-//! │                                                             │
-//! │ freed: 2 (slots 7, 8 are free)                              │
-//! │ used: 5  (slots 2,3,5,6 have data; S₁,S₂ are sentinels)     │
-//! └─────────────────────────────────────────────────────────────┘
+//! +-------------------------------------------------------------+
+//! | elems: Vec<Elem<T>>                                         |
+//! | +-----+-----+-----+-----+-----+-----+-----+-----+-----+     |
+//! | |  0  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |  8  |     |
+//! | |Free | S1  | A   | B   | S2  | X   | Y   |Free |Free |     |
+//! | |Sent.|     |     |     |     |     |     |     |     |     |
+//! | +-----+-----+-----+-----+-----+-----+-----+-----+-----+     |
+//! |                                                             |
+//! | freed: 2 (slots 7, 8 are free)                              |
+//! | used: 5  (slots 2,3,5,6 have data; S1,S2 are sentinels)     |
+//! +-------------------------------------------------------------+
 //!
-//! Free List:  [0] ↔ [7] ↔ [8] ↔ [0]  (circular, slot 0 is sentinel)
-//! List 1:     [1] ↔ [2] ↔ [3] ↔ [1]  (S₁ sentinel, A↔B data)
-//! List 2:     [4] ↔ [5] ↔ [6] ↔ [4]  (S₂ sentinel, X↔Y data)
+//! Free List:  [0] <-> [7] <-> [8] <-> [0]  (circular, slot 0 is sentinel)
+//! List 1:     [1] <-> [2] <-> [3] <-> [1]  (S1 sentinel, A<->B data)
+//! List 2:     [4] <-> [5] <-> [6] <-> [4]  (S2 sentinel, X<->Y data)
 //! ```
 //!
 //! ## Slot 0 is Reserved
@@ -39,20 +42,20 @@
 //! right slot but have the wrong generation, so `get()` fails safely:
 //!
 //! ```text
-//! Time 0: alloc slot 5 → handle {slot:5, vers:3}
-//! Time 1: free slot 5  → element 5 generation becomes 4
-//! Time 2: alloc slot 5 → handle {slot:5, vers:5}
+//! Time 0: alloc slot 5 -> handle {slot:5, vers:3}
+//! Time 1: free slot 5  -> element 5 generation becomes 4
+//! Time 2: alloc slot 5 -> handle {slot:5, vers:5}
 //!
-//! Old handle {slot:5, vers:3} → get() returns None (stale)
-//! New handle {slot:5, vers:5} → get() returns Some(&data)
+//! Old handle {slot:5, vers:3} -> get() returns None (stale)
+//! New handle {slot:5, vers:5} -> get() returns Some(&data)
 //! ```
 //!
 //! ## Two-Phase Deletion
 //!
 //! Deletion is split into data removal and element recycling:
 //!
-//! 1. `data_swap(handle, None)` — Take data out (element → Zombie state)
-//! 2. `index_del(handle)` — Return element to free list (Zombie → Free)
+//! 1. `data_swap(handle, None)` — Take data out (element -> Zombie state)
+//! 2. `index_del(handle)` — Return element to free list (Zombie -> Free)
 //!
 //! This separation enables complex operations like FibHeap's `pop()` which
 //! must manipulate node links after extracting data but before freeing.
@@ -63,18 +66,25 @@
 //! are removed. Since this invalidates slot numbers, a remapping table is
 //! returned so data structures can update their handles. The algorithm:
 //!
-//! 1. Build remap: old_slot → new_slot (O(capacity) scan)
+//! 1. Build remap: old_slot -> new_slot (O(capacity) scan)
 //! 2. Swap-remove free elements from the end
 //! 3. Update all next/prev links using remap
 //! 4. Return remap for external handle updates
 
-use crate::elem::Elem;
+use crate::elem::{Elem, STATE_MASK, STATE_USED};
+use crate::generation::{Generation, ElemState};
+use crate::slot::Slot;
 use crate::Index;
 use crate::IndexMap;
-use alloc::{slice, vec, vec::Vec};
-use core::{error, fmt, mem::MaybeUninit};
+use alloc::{vec, vec::Vec};
+use core::{error, fmt};
+
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{
+    Serialize, Deserialize, Serializer, Deserializer,
+    ser::SerializeStruct,
+    de::{self, Visitor, MapAccess, SeqAccess},
+};
 
 /// An error type representing failures in list operations.
 ///
@@ -114,42 +124,147 @@ impl fmt::Display for IndexError {
     }
 }
 
-/// A pool of `ListElem<T>` nodes that provides memory for multiple data structures.
+/// A pool of elements that provides memory for multiple data structures.
+///
+/// # Struct-of-Arrays Design
+///
+/// Each element stores its metadata (links + generation/state) and user data
+/// inline, providing optimal cache locality for linked list operations.
 ///
 /// # Rationale
 ///
 /// The `ElemPool` is the cornerstone of this library's design. It acts as a
-/// specialized memory allocator. By pre-allocating memory in a `Vec` and managing
+/// specialized memory allocator. By pre-allocating memory in Vecs and managing
 /// its own free list, it avoids the performance cost of frequent calls to the
 /// global allocator. This makes creating and destroying elements extremely fast.
 ///
-/// All list elements, regardless of which `PieList` or `FibHeap` they belong to,
-/// are stored contiguously within this single structure, leading to better cache
-/// locality during traversals compared to traditional node-based linked lists.
-///
 /// Its public API is minimal, as most interactions are performed through `PieList`,
 /// `CursorMut`, or `FibHeap` methods, which take the pool as an argument.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ElemPool<T> {
-    /// The contiguous storage for all list elements (nodes).
+    /// Elements containing metadata (links + generation/state) and user data.
     elems: Vec<Elem<T>>,
     /// A count of elements currently in the free list.
     freed: usize,
-    /// The number of elements that contain user data (`Some(T)`).
+    /// The number of elements that contain user data.
     /// This count excludes all sentinel nodes and free elements.
     used: usize,
+}
+
+impl<T: Clone> Clone for ElemPool<T> {
+    fn clone(&self) -> Self {
+        Self {
+            elems: self.elems.clone(),
+            freed: self.freed,
+            used: self.used,
+        }
+    }
+}
+
+// =========================================================================
+// Custom Serde Implementation
+// =========================================================================
+//
+// We derive Serialize/Deserialize directly since Elem<T> now handles
+// its own serialization with inline data.
+
+#[cfg(feature = "serde")]
+impl<T: Serialize> Serialize for ElemPool<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize as a struct with: elems, freed, used
+        let mut state = serializer.serialize_struct("ElemPool", 3)?;
+        state.serialize_field("elems", &self.elems)?;
+        state.serialize_field("freed", &self.freed)?;
+        state.serialize_field("used", &self.used)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for ElemPool<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field { Elems, Freed, Used }
+
+        struct ElemPoolVisitor<T>(core::marker::PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ElemPoolVisitor<T> {
+            type Value = ElemPool<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct ElemPool")
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<ElemPool<T>, V::Error>
+            where
+                V: SeqAccess<'de>,
+            {
+                let elems: Vec<Elem<T>> = seq.next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let freed: usize = seq.next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let used: usize = seq.next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+
+                Ok(ElemPool { elems, freed, used })
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<ElemPool<T>, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut elems: Option<Vec<Elem<T>>> = None;
+                let mut freed: Option<usize> = None;
+                let mut used: Option<usize> = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Elems => {
+                            if elems.is_some() {
+                                return Err(de::Error::duplicate_field("elems"));
+                            }
+                            elems = Some(map.next_value()?);
+                        }
+                        Field::Freed => {
+                            if freed.is_some() {
+                                return Err(de::Error::duplicate_field("freed"));
+                            }
+                            freed = Some(map.next_value()?);
+                        }
+                        Field::Used => {
+                            if used.is_some() {
+                                return Err(de::Error::duplicate_field("used"));
+                            }
+                            used = Some(map.next_value()?);
+                        }
+                    }
+                }
+
+                let elems = elems.ok_or_else(|| de::Error::missing_field("elems"))?;
+                let freed = freed.ok_or_else(|| de::Error::missing_field("freed"))?;
+                let used = used.ok_or_else(|| de::Error::missing_field("used"))?;
+
+                Ok(ElemPool { elems, freed, used })
+            }
+        }
+
+        const FIELDS: &[&str] = &["elems", "freed", "used"];
+        deserializer.deserialize_struct("ElemPool", FIELDS, ElemPoolVisitor(core::marker::PhantomData))
+    }
 }
 
 impl<T> Default for ElemPool<T> {
     /// Creates a new `ElemPool`, initialized with a single sentinel element
     /// for its internal free list.
     fn default() -> Self {
-        let sentinel_index = Self::free_sentinel_index();
-        let mut sentinel_elem = Elem::default();
-        // Force the sentinel state (state 10)
-        sentinel_elem.force_sentinel();
-        let _ = sentinel_elem.new_links(sentinel_index, sentinel_index);
+        // Free list sentinel at slot 0, pointing to itself
+        let sentinel_elem = Elem::new_self_ref(Slot::new(0), ElemState::Sentinel);
         Self {
             elems: vec![sentinel_elem],
             freed: 0,
@@ -170,6 +285,7 @@ impl<T> ElemPool<T> {
 
     /// Returns the fixed index for the free list's sentinel node, which is always 0.
     #[inline(always)]
+    #[allow(dead_code)]
     fn free_sentinel_index() -> Index<T> {
         Index::from(0u32)
     }
@@ -238,10 +354,9 @@ impl<T> ElemPool<T> {
     /// free/sentinel element.
     #[inline]
     pub fn contains(&self, index: Index<T>) -> bool {
-        index
-            .get()
-            .and_then(|n| self.elems.get(n))
-            .is_some_and(|e| e.is_used())
+        self.validate_vers(index)
+            .map(|slot| self.elems[slot].is_used())
+            .unwrap_or(false)
     }
 
     /// Performs a detailed validation of an index and its surrounding links.
@@ -258,40 +373,40 @@ impl<T> ElemPool<T> {
     /// first validation failure encountered.
     #[inline]
     pub fn validate_index(&self, index: Index<T>) -> Result<(), IndexError> {
-           let ndx = index.get().ok_or(IndexError::IndexIsNone)?;
-           let elem = self.elems.get(ndx).ok_or(IndexError::IndexOutOfBounds)?;
-           // 1. Generation Check (ABA Protection)
-           if elem.vers != index.vers {
-               return Err(IndexError::IndexIsStale);
-           }
+        let slot = index.get().ok_or(IndexError::IndexIsNone)?;
+        let elem = self.elems.get(slot).ok_or(IndexError::IndexOutOfBounds)?;
+
+        // 1. Generation Check (ABA Protection)
+        if elem.vers.as_raw() != index.vers {
+            return Err(IndexError::IndexIsStale);
+        }
         if elem.is_free() {
             return Err(IndexError::ElementIsFree);
         }
-        let prev_ndx = elem.prev.get().ok_or(IndexError::BrokenPrevLink)?;
-        let prev_elem = self
-            .elems
-            .get(prev_ndx)
-            .ok_or(IndexError::BrokenPrevLink)?;
-        if prev_elem.next != index {
+
+        // 2. Check prev's next points back to us
+        let prev_slot = elem.prev.get().ok_or(IndexError::BrokenPrevLink)?;
+        let prev_elem = self.elems.get(prev_slot).ok_or(IndexError::BrokenPrevLink)?;
+        if prev_elem.next.get() != Some(slot) {
             return Err(IndexError::BrokenPrevLink);
         }
-        let next_ndx = elem.next.get().ok_or(IndexError::BrokenNextLink)?;
-        let next_elem = self
-            .elems
-            .get(next_ndx)
-            .ok_or(IndexError::BrokenNextLink)?;
-        if next_elem.prev != index {
+
+        // 3. Check next's prev points back to us
+        let next_slot = elem.next.get().ok_or(IndexError::BrokenNextLink)?;
+        let next_elem = self.elems.get(next_slot).ok_or(IndexError::BrokenNextLink)?;
+        if next_elem.prev.get() != Some(slot) {
             return Err(IndexError::BrokenNextLink);
         }
+
         Ok(())
     }
 
-    /// Returns an iterator over the pool's raw elements.
+    /// Returns an iterator over the pool's raw element metadata.
     ///
     /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
     /// that require traversing the entire pool structure, such as remapping internal
     /// pointers after a `shrink_to_fit` operation.
-    pub fn iter(&self) -> slice::Iter<'_, Elem<T>> {
+    pub fn iter_elems(&self) -> core::slice::Iter<'_, Elem<T>> {
         self.elems.iter()
     }
 
@@ -300,8 +415,21 @@ impl<T> ElemPool<T> {
     /// This is primarily used internally (e.g. by `FibHeap`) to perform operations
     /// that require traversing the entire pool structure, such as remapping internal
     /// pointers after a `shrink_to_fit` operation.
-    pub fn iter_mut(&mut self) -> slice::IterMut<'_, Elem<T>> {
+    pub fn iter_elems_mut(&mut self) -> core::slice::IterMut<'_, Elem<T>> {
         self.elems.iter_mut()
+    }
+
+    // --- Internal Helper: Version Validation ---
+
+    /// Validates an index and returns the slot if valid.
+    #[inline]
+    fn validate_vers(&self, index: Index<T>) -> Result<usize, IndexError> {
+        let slot = index.get().ok_or(IndexError::IndexIsNone)?;
+        let elem = self.elems.get(slot).ok_or(IndexError::IndexOutOfBounds)?;
+        if elem.vers.as_raw() != index.vers {
+            return Err(IndexError::IndexIsStale);
+        }
+        Ok(slot)
     }
 
     /// Allocates a new index, reusing a free element if available or creating a new one.
@@ -309,29 +437,31 @@ impl<T> ElemPool<T> {
     /// This is the primary method for acquiring a new node from the pool. It
     /// first checks the free list. If the free list is not empty, it unlinks
     /// and returns the first available node. If the free list is empty, it
-    /// pushes a new `ListElem` to the end of the internal `Vec`.
+    /// pushes a new element to the end of the internal Vec.
     pub(crate) fn index_new(&mut self) -> Result<Index<T>, IndexError> {
-        let free_sentinel_ndx = Self::free_sentinel_index();
-        // Use raw access to sentinel to avoid version checks on the sentinel itself
-        let next_free = self.elems[0].next;
-        if next_free != free_sentinel_ndx {
-            // Free list is not empty, reuse an element.
-            self.index_linkout(next_free)?;
-            let slot = next_free.slot;
-            let elem = &mut self.elems[slot as usize];
-            // Bump generation and mark as ZOMBIE (Used but no data).
-            let new_vers = elem.bump_gen(crate::elem::STATE_ZOMBIE);            self.freed -= 1;
-            Ok(Index::new(slot, new_vers))
-        } else {
-            // Free list is empty, allocate a new element.
-            let slot = self.elems.len() as u32;
-            let mut new_elem = Elem::default();
-            // It starts as Free (default). Transition to ZOMBIE.
-            let new_vers = new_elem.bump_gen(crate::elem::STATE_ZOMBIE);            let ndx = Index::new(slot, new_vers);
-            let _ = new_elem.new_links(Index::NONE, Index::NONE);
-            self.elems.push(new_elem);
-            Ok(ndx)
+        // Check free list (slot 0 is free sentinel)
+        let next_free_slot = self.elems[0].next;
+        // Free list is empty when sentinel points to itself (slot 0)
+        if let Some(slot_idx) = next_free_slot.get()
+            && slot_idx != 0 {
+                // Free list is not empty, reuse an element.
+                self.slot_linkout(next_free_slot);
+                let elem = &mut self.elems[slot_idx];
+                // Bump generation and mark as ZOMBIE (allocated but no data yet).
+                let new_vers = elem.bump_gen(ElemState::Zombie);
+                self.freed -= 1;
+                return Ok(Index::new(next_free_slot.as_raw(), new_vers));
         }
+        // Free list is empty, allocate a new element.
+        let slot = self.elems.len() as u32;
+        let slot_ref = Slot::new(slot);
+        let mut new_elem = Elem::default();
+        // It starts as Free (default). Transition to ZOMBIE.
+        let new_vers = new_elem.bump_gen(ElemState::Zombie);
+        // Self-reference initially
+        new_elem.set_links(slot_ref, slot_ref);
+        self.elems.push(new_elem);
+        Ok(Index::new(slot, new_vers))
     }
 
     /// Converts a ZOMBIE element to a SENTINEL element.
@@ -343,40 +473,44 @@ impl<T> ElemPool<T> {
     /// Returns a new Index with the updated version, or an error if the
     /// provided index does not match the element at that location.
     pub(crate) fn index_make_sentinel(&mut self, index: Index<T>) -> Result<Index<T>, IndexError> {
-        let elem = self.get_mut(index)?;
+        let slot = self.validate_vers(index)?;
+        let elem = &mut self.elems[slot];
+
         // Element should be ZOMBIE (just allocated via index_new)
         if !elem.is_zombie() {
             return Err(IndexError::ElementIsFree);
         }
+
         // Transition state from ZOMBIE to SENTINEL
-        // Keep the generation, just change the state bits
-        elem.vers = (elem.vers & !crate::elem::STATE_MASK) | crate::elem::STATE_SENTINEL;
-        let new_vers = elem.vers;
-        // Update the sentinel's self-references to use the new version
-        let sentinel_idx = Index::new(index.slot, new_vers);
-        elem.next = sentinel_idx;
-        elem.prev = sentinel_idx;
-        Ok(sentinel_idx)
+        let new_vers = elem.make_sentinel();
+
+        // Sentinel points to itself (empty list)
+        let slot_ref = Slot::new(slot as u32);
+        elem.set_links(slot_ref, slot_ref);
+
+        Ok(Index::new(index.slot, new_vers))
     }
 
     /// Allocates a new index and initializes it with data, returning the correct Index
     /// with the USED state version.
     ///
-    /// This combines `index_new()` and `data_swap()` to ensure the returned Index
+    /// This combines `index_new()` and data initialization to ensure the returned Index
     /// has the correct version for a USED element.
     pub(crate) fn index_new_with_data(&mut self, data: T) -> Result<Index<T>, IndexError> {
         let new_idx = self.index_new()?;
-        // Get the element and set it to USED state
         let slot = new_idx.slot as usize;
-        let elem = self.elems.get_mut(slot).ok_or(IndexError::IndexOutOfBounds)?;
+
+        let elem = &mut self.elems[slot];
         if !elem.is_zombie() {
             return Err(IndexError::ElementIsFree);
         }
-        elem.data = MaybeUninit::new(data);
-        elem.vers = (elem.vers & !crate::elem::STATE_MASK) | crate::elem::STATE_USED;
-        let vers = elem.vers;
+
+        // Store data and transition to USED
+        elem.write_data(data);
+        let new_vers = elem.make_used();
         self.used += 1;
-        Ok(Index::new(new_idx.slot, vers))
+
+        Ok(Index::new(new_idx.slot, new_vers))
     }
 
     /// Returns an index to the free list.
@@ -388,87 +522,102 @@ impl<T> ElemPool<T> {
         if index.slot == 0 {
             return Err(IndexError::ElementIsFreeSentinel);
         }
-        // 1. Validate & Get Mutable (Checks Generation)
-        let slot = index.slot;
-        let elem = self.elems.get_mut(slot as usize).ok_or(IndexError::IndexOutOfBounds)?;
-        // Strict check:
-        // elem.vers must match index.vers (Normal case)
-        // OR elem.vers must match index.vers converted to Zombie (Data swapped case)
+
+        let slot = index.slot as usize;
+        let elem = self.elems.get(slot).ok_or(IndexError::IndexOutOfBounds)?;
+
+        // Strict check: version must match, OR element became zombie (data was taken)
         let is_zombie_match = elem.is_zombie() &&
-             ((elem.vers & !crate::elem::STATE_MASK) == (index.vers & !crate::elem::STATE_MASK)) &&
-             ((index.vers & crate::elem::STATE_MASK) == crate::elem::STATE_USED);
+             elem.vers.same_counter(Generation::from_raw(index.vers)) &&
+             ((index.vers & STATE_MASK) == STATE_USED);
 
-        if elem.vers != index.vers && !is_zombie_match {
-
+        if elem.vers.as_raw() != index.vers && !is_zombie_match {
             return Err(IndexError::IndexIsStale);
         }
-        // 2. Transition State: Used -> Free (Increments Generation)
+
+        // Transition State: Zombie/Used -> Free (Increments Generation)
+        let elem = &mut self.elems[slot];
         let new_vers = elem.make_free();
-        // 3. Link into Free List
-        // We must create a new Index handle because the version just changed!
-        let new_free_idx = Index::new(slot, new_vers);
-        let free_sentinel_ndx = Self::free_sentinel_index();
-        // Pass our *new* valid index to be linked.
-        self.index_link_after(new_free_idx, free_sentinel_ndx)?;
+
+        // Link into Free List (after the sentinel at slot 0)
+        self.slot_link_after(Slot::new(slot as u32), Slot::new(0));
         self.freed += 1;
+        // Suppress unused warning - new_vers is for consistency
+        let _ = new_vers;
         Ok(())
     }
 
-    /// Gets an immutable reference to the `ListElem` at the given index.
+    /// Gets an immutable reference to the element metadata at the given index.
     #[inline]
-    pub(crate) fn get(&self, index: Index<T>) -> Result<&Elem<T>, IndexError> {
-        let n = index.get().ok_or(IndexError::IndexIsNone)?;
-        let elem = self.elems.get(n).ok_or(IndexError::IndexOutOfBounds)?;
-        if elem.vers != index.vers {
-            return Err(IndexError::IndexIsStale);
-        }
-        Ok(elem)
+    #[allow(dead_code)]
+    pub(crate) fn get_elem(&self, index: Index<T>) -> Result<&Elem<T>, IndexError> {
+        let slot = self.validate_vers(index)?;
+        Ok(&self.elems[slot])
     }
 
-    /// Gets a mutable reference to the `ListElem` at the given index.
+    /// Gets a mutable reference to the element metadata at the given index.
     #[inline]
-    pub(crate) fn get_mut(&mut self, index: Index<T>) -> Result<&mut Elem<T>, IndexError> {
-        let n = index.get().ok_or(IndexError::IndexIsNone)?;
-        let elem = self.elems.get_mut(n).ok_or(IndexError::IndexOutOfBounds)?;
-        if elem.vers != index.vers {
-            return Err(IndexError::IndexIsStale);
-        }
-        Ok(elem)
+    pub(crate) fn get_elem_mut(&mut self, index: Index<T>) -> Result<&mut Elem<T>, IndexError> {
+        let slot = self.validate_vers(index)?;
+        Ok(&mut self.elems[slot])
     }
 
     /// Gets the `next` index for the element at the given index.
+    /// Returns Index with the version of the next element.
     #[inline]
     pub(crate) fn next(&self, index: Index<T>) -> Index<T> {
-        // `unwrap_or_default` returns `Index::NONE` on error.
-        self.get(index).map(|i| i.next).unwrap_or_default()
+        if let Ok(slot) = self.validate_vers(index) {
+            if let Some(next_slot) = self.elems[slot].next.get() {
+                let next_vers = self.elems[next_slot].vers.as_raw();
+                Index::new(self.elems[slot].next.as_raw(), next_vers)
+            } else {
+                Index::NONE
+            }
+        } else {
+            Index::NONE
+        }
     }
 
     /// Gets the `prev` index for the element at the given index.
+    /// Returns Index with the version of the prev element.
     #[inline]
     pub(crate) fn prev(&self, index: Index<T>) -> Index<T> {
-        self.get(index).map(|i| i.prev).unwrap_or_default()
+        if let Ok(slot) = self.validate_vers(index) {
+            if let Some(prev_slot) = self.elems[slot].prev.get() {
+                let prev_vers = self.elems[prev_slot].vers.as_raw();
+                Index::new(self.elems[slot].prev.as_raw(), prev_vers)
+            } else {
+                Index::NONE
+            }
+        } else {
+            Index::NONE
+        }
     }
 
     /// Gets an immutable reference to the data inside the element at the given index.
     #[inline]
     pub(crate) fn data(&self, index: Index<T>) -> Option<&T> {
-        self.get(index).ok().and_then(|i|
-            if i.is_used() {
-                #[allow(unsafe_code)]
-                Some(unsafe { i.data.assume_init_ref() })
-            } else { None }
-        )
+        let slot = self.validate_vers(index).ok()?;
+        let elem = &self.elems[slot];
+        if elem.is_used() {
+            #[allow(unsafe_code)]
+            Some(unsafe { elem.data_ref_unchecked() })
+        } else {
+            None
+        }
     }
 
     /// Gets a mutable reference to the data inside the element at the given index.
     #[inline]
     pub(crate) fn data_mut(&mut self, index: Index<T>) -> Option<&mut T> {
-        self.get_mut(index).ok().and_then(|i|
-            if i.is_used() {
-                #[allow(unsafe_code)]
-                Some(unsafe { i.data.assume_init_mut() })
-            } else { None }
-        )
+        let slot = self.validate_vers(index).ok()?;
+        let elem = &mut self.elems[slot];
+        if elem.is_used() {
+            #[allow(unsafe_code)]
+            Some(unsafe { elem.data_mut_unchecked() })
+        } else {
+            None
+        }
     }
 
     /// Swaps the data in an element and updates the pool's `used` count accordingly.
@@ -476,39 +625,176 @@ impl<T> ElemPool<T> {
     /// This is the sole method responsible for modifying an element's data, as it
     /// correctly maintains the pool's `used` counter.
     #[inline]
-    pub(crate) fn data_swap(&mut self, index: Index<T>, data: Option<T>) -> Option<T> {
-        let elem = self.get_mut(index).ok()?;
-        if let Some(new_data) = data {
-            // Replacing data
-            let prev = elem.replace_data(new_data);
-            if prev.is_none() { self.used += 1; }
-            prev
+    pub(crate) fn data_swap(&mut self, index: Index<T>, new_data: Option<T>) -> Option<T> {
+        let slot = self.validate_vers(index).ok()?;
+        let elem = &mut self.elems[slot];
+
+        if let Some(data) = new_data {
+            // Storing new data
+            let old_data = if elem.is_used() {
+                #[allow(unsafe_code)]
+                Some(unsafe { elem.take_data_unchecked() })
+            } else {
+                None
+            };
+
+            elem.write_data(data);
+
+            // If transitioning from zombie to used, update state
+            if elem.is_zombie() {
+                elem.vers = elem.vers.with_state(ElemState::Used);
+            }
+
+            if old_data.is_none() && elem.is_used() {
+                self.used += 1;
+            }
+            old_data
         } else {
             // Taking data out (Zombie transition)
-            let prev = elem.take_data();
-            if prev.is_some() { self.used -= 1; }
-            prev
+            if elem.is_used() {
+                #[allow(unsafe_code)]
+                let old_data = unsafe { elem.take_data_unchecked() };
+                elem.make_zombie();
+                self.used -= 1;
+                Some(old_data)
+            } else {
+                None
+            }
         }
     }
+
+    // =========================================================================
+    // Internal Slot-Based Link Operations (no version checks)
+    // =========================================================================
+
+    /// Unlinks a slot from its neighbors (internal, no version check).
+    #[inline]
+    fn slot_linkout(&mut self, slot: Slot) {
+        let slot_idx = slot.unwrap();
+        let elem = &self.elems[slot_idx];
+        let (prev_slot, next_slot) = (elem.prev, elem.next);
+
+        // Update prev's next
+        self.elems[prev_slot.unwrap()].next = next_slot;
+        // Update next's prev
+        self.elems[next_slot.unwrap()].prev = prev_slot;
+        // Self-reference
+        let elem = &mut self.elems[slot_idx];
+        elem.set_links(slot, slot);
+    }
+
+    /// Links slot immediately after `after_slot` (internal, no version check).
+    #[inline]
+    fn slot_link_after(&mut self, slot: Slot, after_slot: Slot) {
+        let next_slot = self.elems[after_slot.unwrap()].next;
+
+        // Update after's next
+        self.elems[after_slot.unwrap()].next = slot;
+        // Update next's prev
+        self.elems[next_slot.unwrap()].prev = slot;
+        // Set this element's links
+        self.elems[slot.unwrap()].set_links(after_slot, next_slot);
+    }
+
+    /// Links slot immediately before `before_slot` (internal, no version check).
+    #[inline]
+    fn slot_link_before(&mut self, slot: Slot, before_slot: Slot) {
+        let prev_slot = self.elems[before_slot.unwrap()].prev;
+
+        // Update before's prev
+        self.elems[before_slot.unwrap()].prev = slot;
+        // Update prev's next
+        self.elems[prev_slot.unwrap()].next = slot;
+        // Set this element's links
+        self.elems[slot.unwrap()].set_links(prev_slot, before_slot);
+    }
+
+    // =========================================================================
+    // Fast Slot-Based Accessors (no generation lookup - internal use only)
+    // =========================================================================
+    //
+    // These methods provide O(1) access to element data using raw slot indices.
+    // They skip generation validation and the expensive lookup of the next
+    // element's version. Use these for internal traversals where the slot
+    // is known to be valid.
+
+    /// Gets the next slot for an element (no generation lookup).
+    ///
+    /// This is much faster than `next()` which must look up the next element's
+    /// generation to construct an `Index<T>`.
+    #[inline]
+    pub(crate) fn next_slot(&self, slot: usize) -> Slot {
+        self.elems[slot].next
+    }
+
+    /// Gets the prev slot for an element (no generation lookup).
+    #[inline]
+    pub(crate) fn prev_slot(&self, slot: usize) -> Slot {
+        self.elems[slot].prev
+    }
+
+    #[allow(dead_code)]
+    /// Gets an immutable reference to element by slot (unchecked).
+    #[inline]
+    pub(crate) fn elem(&self, slot: usize) -> &Elem<T> {
+        &self.elems[slot]
+    }
+
+    /// Gets a mutable reference to element by slot (unchecked).
+    #[inline]
+    pub(crate) fn elem_mut(&mut self, slot: usize) -> &mut Elem<T> {
+        &mut self.elems[slot]
+    }
+
+    /// Gets an immutable reference to user data by slot (unchecked).
+    ///
+    /// # Safety
+    /// Caller must ensure the slot is valid and contains USED data.
+    #[inline]
+    pub(crate) fn data_at(&self, slot: usize) -> Option<&T> {
+        let elem = &self.elems[slot];
+        if elem.is_used() {
+            #[allow(unsafe_code)]
+            Some(unsafe { elem.data_ref_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    /// Gets a mutable reference to user data by slot (unchecked).
+    ///
+    /// # Safety
+    /// Caller must ensure the slot is valid and contains USED data.
+    #[inline]
+    pub(crate) fn data_at_mut(&mut self, slot: usize) -> Option<&mut T> {
+        let elem = &mut self.elems[slot];
+        if elem.is_used() {
+            #[allow(unsafe_code)]
+            Some(unsafe { elem.data_mut_unchecked() })
+        } else {
+            None
+        }
+    }
+
+    /// Constructs an Index<T> from a slot by reading its current generation.
+    ///
+    /// Use this when you need to return an Index<T> to external code after
+    /// doing internal slot-based operations.
+    #[inline]
+    pub(crate) fn index_from_slot(&self, slot: usize) -> Index<T> {
+        Index::new(slot as u32, self.elems[slot].vers.as_raw())
+    }
+
+    // =========================================================================
+    // Public Index-Based Link Operations (with version checks)
+    // =========================================================================
 
     /// Unlinks an element from its current position in a list.
     /// After this operation, the element points to itself.
     #[inline]
     pub(crate) fn index_linkout(&mut self, index: Index<T>) -> Result<(), IndexError> {
-        let (prev_ndx, next_ndx) = self.get_mut(index)?.new_links(index, index);
-        let free_sentinel_ndx = Self::free_sentinel_index();
-
-        if prev_ndx.slot == free_sentinel_ndx.slot {
-            self.elems[0].next = next_ndx;
-        } else {
-            self.get_mut(prev_ndx)?.new_next(next_ndx);
-        }
-
-        if next_ndx.slot == free_sentinel_ndx.slot {
-            self.elems[0].prev = prev_ndx;
-        } else {
-            self.get_mut(next_ndx)?.new_prev(prev_ndx);
-        }
+        let slot = self.validate_vers(index)?;
+        self.slot_linkout(Slot::new(slot as u32));
         Ok(())
     }
 
@@ -519,25 +805,9 @@ impl<T> ElemPool<T> {
         this: Index<T>,
         after: Index<T>,
     ) -> Result<(), IndexError> {
-        let free_sentinel_ndx = Self::free_sentinel_index();
-
-        // Special case: if 'after' is the free sentinel, use raw access to avoid version checks
-        let next_ndx = if after.slot == free_sentinel_ndx.slot {
-            let next = self.elems[0].next;
-            self.elems[0].next = this;  // Update sentinel's next pointer
-            next
-        } else {
-            self.get_mut(after)?.new_next(this)
-        };
-
-        let _ = self.get_mut(this)?.new_links(after, next_ndx);
-
-        // Fix neighbor pointing back. Handle sentinel case explicitly.
-        if next_ndx.slot == free_sentinel_ndx.slot {
-            self.elems[0].prev = this;
-        } else if next_ndx.is_some() {
-            self.get_mut(next_ndx)?.new_prev(this);
-        }
+        let this_slot = self.validate_vers(this)?;
+        let after_slot = self.validate_vers(after)?;
+        self.slot_link_after(Slot::new(this_slot as u32), Slot::new(after_slot as u32));
         Ok(())
     }
 
@@ -548,25 +818,9 @@ impl<T> ElemPool<T> {
         this: Index<T>,
         before: Index<T>,
     ) -> Result<(), IndexError> {
-        let free_sentinel_ndx = Self::free_sentinel_index();
-
-        // Special case: if 'before' is the free sentinel, use raw access to avoid version checks
-        let prev_ndx = if before.slot == free_sentinel_ndx.slot {
-            let prev = self.elems[0].prev;
-            self.elems[0].prev = this;  // Update sentinel's prev pointer
-            prev
-        } else {
-            self.get_mut(before)?.new_prev(this)
-        };
-
-        let _ = self.get_mut(this)?.new_links(prev_ndx, before);
-
-        // Fix neighbor pointing back. Handle sentinel case explicitly.
-        if prev_ndx.slot == free_sentinel_ndx.slot {
-            self.elems[0].next = this;
-        } else if prev_ndx.is_some() {
-            self.get_mut(prev_ndx)?.new_next(this);
-        }
+        let this_slot = self.validate_vers(this)?;
+        let before_slot = self.validate_vers(before)?;
+        self.slot_link_before(Slot::new(this_slot as u32), Slot::new(before_slot as u32));
         Ok(())
     }
 
@@ -607,13 +861,17 @@ impl<T> ElemPool<T> {
         // Map index i -> vector index (target_len + i)
         let mut is_free_tail = vec![false; tail_len];
         let mut vacancies = Vec::with_capacity(tail_len);
-        let free_sentinel = Self::free_sentinel_index();
 
-        // Start from the first free element directly to avoid version check on Stale sentinel (0@0 vs 0@2)
-        let mut current_free = self.elems[0].next;
+        // Start from the first free element directly
+        let mut current_free_slot = self.elems[0].next;
 
-        while current_free != free_sentinel {
-            let idx = current_free.get().unwrap();
+        // Loop terminates when we reach slot 0 (sentinel pointing to itself)
+        // or Slot::NONE (which shouldn't happen in a well-formed free list)
+        while let Some(idx) = current_free_slot.get() {
+            if idx == 0 {
+                // Reached the sentinel, free list traversal complete
+                break;
+            }
             if idx < target_len {
                 // This is a hole in the preserved region. We must fill it.
                 vacancies.push(idx);
@@ -622,7 +880,7 @@ impl<T> ElemPool<T> {
                 // We mark it so the tail-scanner knows to ignore it.
                 is_free_tail[idx - target_len] = true;
             }
-            current_free = self.next(current_free);
+            current_free_slot = self.elems[idx].next;
         }
 
         // 2. Build slot-indexed remapping array for O(1) lookups.
@@ -652,7 +910,9 @@ impl<T> ElemPool<T> {
             slot_remap[tail_idx] = dest as u32;
 
             // Capture the version from the element being moved.
-            let vers = self.elems[source].vers;
+            let vers = self.elems[source].vers.as_raw();
+
+            // Swap elems (which now includes data)
             self.elems.swap(dest, source);
 
             let old_idx = Index::new(source as u32, vers);
@@ -662,32 +922,31 @@ impl<T> ElemPool<T> {
             // 4. Fix Neighbors (The Graph Patching)
             // The node at `dest` currently thinks its neighbors are pointing to `source`.
             // We must update those neighbors to point to `dest`.
-            let (prev_idx, next_idx) = self.elems[dest].links();
+            let (prev_slot, next_slot) = self.elems[dest].links();
 
-            // Helper: resolve an index to its effective slot after remapping.
+            // Helper: resolve a slot to its effective slot after remapping.
             // Uses O(1) array lookup for tail items instead of hash map.
-            let resolve = |idx: Index<T>, remap: &[u32], tgt_len: usize| -> Index<T> {
-                let slot = idx.slot as usize;
-                if slot >= tgt_len && slot < old_len {
-                    let new_slot = remap[slot - tgt_len];
-                    if new_slot != u32::MAX {
-                        return Index::new(new_slot, idx.vers);
+            let resolve = |slot: Slot, remap: &[u32], tgt_len: usize, old_len: usize| -> usize {
+                if let Some(slot_usize) = slot.get() {
+                    if slot_usize >= tgt_len && slot_usize < old_len {
+                        let new_slot = remap[slot_usize - tgt_len];
+                        if new_slot != u32::MAX {
+                            return new_slot as usize;
+                        }
                     }
+                    slot_usize
+                } else {
+                    0 // NONE slot, should not happen for valid links
                 }
-                idx
             };
 
             // Fix prev's next pointer
-            let effective_prev = resolve(prev_idx, &slot_remap, target_len);
-            if let Ok(elem) = self.get_mut(effective_prev) {
-                elem.next = new_idx;
-            }
+            let effective_prev = resolve(prev_slot, &slot_remap, target_len, old_len);
+            self.elems[effective_prev].next = Slot::new(dest as u32);
 
             // Fix next's prev pointer
-            let effective_next = resolve(next_idx, &slot_remap, target_len);
-            if let Ok(elem) = self.get_mut(effective_next) {
-                elem.prev = new_idx;
-            }
+            let effective_next = resolve(next_slot, &slot_remap, target_len, old_len);
+            self.elems[effective_next].prev = Slot::new(dest as u32);
         }
 
         // 5. Final Cleanup
@@ -696,9 +955,8 @@ impl<T> ElemPool<T> {
         // Reset pool state
         self.freed = 0;
         // Reset the free list sentinel to point to itself (empty list)
-        if let Some(sentinel) = self.elems.get_mut(0) {
-             let _ = sentinel.new_links(free_sentinel, free_sentinel);
-        }
+        self.elems[0].set_links(Slot::new(0), Slot::new(0));
+
         remapping
     }
 }
@@ -715,23 +973,39 @@ where T: fmt::Display,
             self.freed
         )?;
         for (i, elem) in self.elems.iter().enumerate() {
-            writeln!(f, "  [{}]: {}", i, elem)?;
+            if elem.is_used() {
+                #[allow(unsafe_code)]
+                let data = unsafe { elem.data_ref_unchecked() };
+                writeln!(f, "  [{}]: {} = {}", i, elem, data)?;
+            } else {
+                writeln!(f, "  [{}]: {}", i, elem)?;
+            }
         }
         Ok(())
     }
 }
 
+impl<T: fmt::Debug> fmt::Debug for ElemPool<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElemPool")
+            .field("elems", &self.elems)
+            .field("freed", &self.freed)
+            .field("used", &self.used)
+            .finish()
+    }
+}
+
 impl<T> Drop for ElemPool<T> {
     fn drop(&mut self) {
+        // Drop data for all USED elements
         for elem in self.elems.iter_mut() {
-            // We only drop data if the element is effectively "Used".
-            // Note: Zombies have already had their data taken/dropped.
-            // Sentinels do not contain data.
-            // Free nodes do not contain data.
             if elem.is_used() {
                 // SAFETY: We are in the Drop impl, so no one else can access this data.
+                // Take the data out to trigger its Drop impl.
                 #[allow(unsafe_code)]
-                unsafe { elem.data.assume_init_drop(); }
+                unsafe {
+                    let _ = elem.take_data_unchecked();
+                }
             }
         }
     }
@@ -796,7 +1070,7 @@ mod tests {
         // The free sentinel points to the newly freed element.
         // We access the sentinel directly to avoid version mismatch issues with the public helper.
         let first_free = pool.elems[0].next;
-        assert_eq!(first_free.slot, deleted_index.slot);
+        assert_eq!(first_free, Slot::new(deleted_index.slot));
 
         // Allocate a new element, it should reuse the deleted index.
         let reused_index = pool.index_new().unwrap();
@@ -846,44 +1120,49 @@ mod tests {
         let i2 = indices[1];
         let i3 = indices[2];
 
-        // Initially, new elements point to NONE
-        assert_eq!(pool.next(i1), Index::NONE);
+        // Initially, new elements are self-referential (point to themselves)
+        assert_eq!(pool.next(i1), i1);
+        assert_eq!(pool.prev(i1), i1);
 
-        // Link i1 -> i2
+        // Link i2 after i1: Creates circular i1 <-> i2
         pool.index_link_after(i2, i1).unwrap();
         assert_eq!(pool.next(i1), i2);
         assert_eq!(pool.prev(i2), i1);
+        assert_eq!(pool.next(i2), i1); // circular back to i1
+        assert_eq!(pool.prev(i1), i2); // circular back from i2
 
-        // Link i2 -> i3
+        // Link i3 after i2: Creates circular i1 <-> i2 <-> i3 <-> i1
         pool.index_link_after(i3, i2).unwrap();
         assert_eq!(pool.next(i2), i3);
         assert_eq!(pool.prev(i3), i2);
+        assert_eq!(pool.next(i3), i1); // circular back to i1
+        assert_eq!(pool.prev(i1), i3); // circular back from i3
 
-        // Check chain i1 -> i2 -> i3
+        // Check full circular chain: i1 -> i2 -> i3 -> i1
         assert_eq!(pool.next(i1), i2);
         assert_eq!(pool.next(i2), i3);
-        assert_eq!(pool.next(i3), Index::NONE);
-
-        // Close circle manually
-        pool.get_mut(i1).unwrap().new_prev(i3);
-        pool.get_mut(i3).unwrap().new_next(i1);
+        assert_eq!(pool.next(i3), i1);
 
         // Unlink i2
         pool.index_linkout(i2).unwrap();
 
-        // i1 -> i3
+        // i1 <-> i3 (circular)
         assert_eq!(pool.next(i1), i3);
         assert_eq!(pool.prev(i3), i1);
+        assert_eq!(pool.next(i3), i1);
+        assert_eq!(pool.prev(i1), i3);
 
         // i2 self-referenced (linkout does this)
         assert_eq!(pool.next(i2), i2);
         assert_eq!(pool.prev(i2), i2);
 
-        // Link i2 before i3
+        // Link i2 before i3 (i3's prev is i1, so inserts between i1 and i3)
         pool.index_link_before(i2, i3).unwrap();
 
+        // Now: i1 <-> i2 <-> i3 <-> i1
         assert_eq!(pool.next(i1), i2);
         assert_eq!(pool.next(i2), i3);
+        assert_eq!(pool.next(i3), i1);
     }
 
     #[test]
@@ -923,24 +1202,24 @@ mod tests {
              // Actually, validate_index checks matching version.
              // If we use the Zombie index, it should pass version check.
              let zombie_ver = pool.elems[i2.slot as usize].vers;
-             let _zombie_idx = Index::<i32>::new(i2.slot, zombie_ver);
+             let _zombie_idx = Index::<i32>::new(i2.slot, zombie_ver.as_raw());
              // But validate_index returns ElementIsFree if elem.is_free().
              // Zombie is NOT free.
              // So we must fully free it (index_del). But we can't easily call index_del here without proper setup.
              // Let's manually set state to Free.
-             pool.elems[i2.slot as usize].vers = (zombie_ver & !crate::elem::STATE_MASK) | crate::elem::STATE_FREE;
+             pool.elems[i2.slot as usize].vers = zombie_ver.with_state(crate::generation::ElemState::Free);
              let free_ver = pool.elems[i2.slot as usize].vers;
-             let free_idx = Index::<i32>::new(i2.slot, free_ver);
+             let free_idx = Index::<i32>::new(i2.slot, free_ver.as_raw());
              assert_eq!(pool.validate_index(free_idx), Err(IndexError::ElementIsFree));
 
-             // Restore
-             pool.elems[i2.slot as usize].vers = i2.vers; // Start state
+             // Restore - need to reconstruct the original version with Used state
+             pool.elems[i2.slot as usize].vers = crate::generation::Generation::from_raw(i2.vers);
              pool.data_swap(i2, Some(20));
         }
 
         // Manually break a link to test for inconsistency
         // i1's next now points to i3, but i3's prev still points to i2
-        pool.get_mut(i1).unwrap().next = i3;
+        pool.elems[i1.slot as usize].next = Slot::new(i3.slot);
 
         // i2 thinks its prev is i1, but i1's next is i3. So i2's prev link is broken.
         assert_eq!(pool.validate_index(i2), Err(IndexError::BrokenPrevLink));
@@ -1015,9 +1294,9 @@ mod tests {
         assert_eq!(*list.front(&pool).unwrap(), "Data");
 
         // Check graph integrity (self-reference of sentinel)
-        let sent_elem = pool.get(list.sentinel).unwrap();
-        assert!(sent_elem.next != list.sentinel, "Sentinel should point to Data");
-        assert!(sent_elem.prev != list.sentinel, "Sentinel should point to Data");
+        let sent_elem = &pool.elems[list.sentinel.slot as usize];
+        assert!(sent_elem.next != Slot::new(list.sentinel.slot), "Sentinel should point to Data");
+        assert!(sent_elem.prev != Slot::new(list.sentinel.slot), "Sentinel should point to Data");
         list.clear(&mut pool);
     }
 

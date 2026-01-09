@@ -135,13 +135,15 @@ impl<'a, T> Cursor<'a, T> {
         // Case 2: At "Before Start" (usize::MAX) -> Move to Head (0)
         // Note: If list is empty, Head is Sentinel, and logical becomes 0 (which matches len).
         if self.current == self.list.sentinel && self.logical_index == usize::MAX {
-            self.current = pool.next(self.list.sentinel);
+            let first_slot = pool.next_slot(self.list.sentinel.slot as usize).unwrap();
+            self.current = pool.index_from_slot(first_slot);
             self.logical_index = 0;
             return;
         }
 
         // Case 3: On a valid element
-        self.current = pool.next(self.current);
+        let next_slot = pool.next_slot(self.current.slot as usize).unwrap();
+        self.current = pool.index_from_slot(next_slot);
         if self.current == self.list.sentinel {
             // We just fell off the end
             self.logical_index = self.list.len();
@@ -183,13 +185,15 @@ impl<'a, T> Cursor<'a, T> {
                 self.logical_index = usize::MAX;
                 return;
             }
-            self.current = pool.prev(self.list.sentinel);
+            let last_slot = pool.prev_slot(self.list.sentinel.slot as usize).unwrap();
+            self.current = pool.index_from_slot(last_slot);
             self.logical_index = self.list.len() - 1;
             return;
         }
 
         // Case 3: On a valid element
-        self.current = pool.prev(self.current);
+        let prev_slot = pool.prev_slot(self.current.slot as usize).unwrap();
+        self.current = pool.index_from_slot(prev_slot);
         if self.current == self.list.sentinel {
             // We moved backward from the first element -> Before Start
             self.logical_index = usize::MAX;
@@ -217,7 +221,8 @@ impl<'a, T> Cursor<'a, T> {
     /// # list.clear(&mut pool);
     /// ```
     pub fn move_to_front(&mut self, pool: &ElemPool<T>) {
-        self.current = pool.next(self.list.sentinel);
+        let first_slot = pool.next_slot(self.list.sentinel.slot as usize).unwrap();
+        self.current = pool.index_from_slot(first_slot);
         self.logical_index = 0;
     }
 
@@ -238,7 +243,8 @@ impl<'a, T> Cursor<'a, T> {
     /// # list.clear(&mut pool);
     /// ```
     pub fn move_to_back(&mut self, pool: &ElemPool<T>) {
-        self.current = pool.prev(self.list.sentinel);
+        let last_slot = pool.prev_slot(self.list.sentinel.slot as usize).unwrap();
+        self.current = pool.index_from_slot(last_slot);
         if self.list.is_empty() {
             self.logical_index = 0;
         } else {

@@ -6,16 +6,39 @@
 //! lists. The key insight is that the element itself contains the list pointers
 //! (`next`/`prev`), making this an *intrusive* linked list design.
 //!
+//! ## Memory Layout
+//!
+//! ```text
+//! Elem<T>
+//! +--------------------------------+
+//! | next: Slot      (4 bytes)      |  <- Compact slot index (u32)
+//! | prev: Slot      (4 bytes)      |  <- Compact slot index (u32)
+//! | vers: Generation (4 bytes)     |  <- 30-bit counter + 2-bit state
+//! | data: MaybeUninit<T> (N bytes) |  <- User data (inline)
+//! +--------------------------------+
+//!  Total: 12 + size_of::<T>() bytes
+//! ```
+//!
+//! ## Compact Links with Slot Type
+//!
+//! Previously, `next`/`prev` were `Index<T>` (8 bytes each, including generation).
+//! The generation in links was redundant for internal navigation because:
+//! - Internal links are always valid (maintained by pool operations)
+//! - Generation is only needed for external API (user-held handles)
+//!
+//! Now internal links are just `Slot` (4 bytes each), saving 8 bytes per element
+//! in link storage. External `Index<T>` handles still contain the full generation.
+//!
 //! ## State Machine
 //!
 //! Each element has a 4-state lifecycle encoded in the low 2 bits of `vers`:
 //!
 //! ```text
-//! vers: u32
-//! ┌────────────────────────────────────┬───────────────────┐
-//! │     Generation (30 bits)           │   State (2 bits)  │
-//! │     0x00000000 - 0x3FFFFFFF        │   00 01 10 11     │
-//! └────────────────────────────────────┴───────────────────┘
+//! vers: u32 (via Generation type)
+//! +------------------------------------+-------------------+
+//! |     Generation (30 bits)           |   State (2 bits)  |
+//! |     0x00000000 - 0x3FFFFFFF        |   00 01 10 11     |
+//! +------------------------------------+-------------------+
 //!
 //! States:
 //!   FREE (00)     - On free list, no data, links to free list neighbors
@@ -27,24 +50,24 @@
 //! ## Transitions
 //!
 //! ```text
-//!     ┌───────────────────────────────────────────┐
-//!     │                                           │
-//!     ▼                                           │
-//!  ┌──────┐  index_new()    ┌────────┐            │
-//!  │ FREE │ ──────────────► │ ZOMBIE │            │
-//!  └──────┘                 └────────┘            │
-//!     ▲                          │                │
-//!     │                          │ data_swap(Some)│
-//!     │ index_del()              ▼                │
-//!     │                     ┌────────┐            │
-//!     └──────────────────── │  USED  │ ───────────┘
-//!                           └────────┘   data_swap(None)
-//!                                │
-//!          index_make_sentinel() │ (from ZOMBIE)
-//!                                ▼
-//!                           ┌──────────┐
-//!                           │ SENTINEL │
-//!                           └──────────┘
+//!     +-------------------------------------------+
+//!     |                                           |
+//!     v                                           |
+//!  +------+  index_new()    +--------+            |
+//!  | FREE | --------------> | ZOMBIE |            |
+//!  +------+                 +--------+            |
+//!     ^                          |                |
+//!     |                          | data_swap(Some)|
+//!     | index_del()              v                |
+//!     |                     +--------+            |
+//!     +-------------------- |  USED  | -----------+
+//!                           +--------+   data_swap(None)
+//!                                |
+//!          index_make_sentinel() | (from ZOMBIE)
+//!                                v
+//!                           +----------+
+//!                           | SENTINEL |
+//!                           +----------+
 //! ```
 //!
 //! ## Why ZOMBIE?
@@ -58,61 +81,43 @@
 //! - FibHeap's pop() which rearranges nodes before freeing
 //! - Maintaining link integrity during complex operations
 
-use crate::index::Index;
 use core::{fmt, mem::{self, MaybeUninit}};
+use crate::generation::{Generation, ElemState};
+use crate::slot::Slot;
 
 // ============================================================================
-// Internal: Bitwise State Management
+// Re-exports for backward compatibility
 // ============================================================================
-//
-// The `vers` field packs both generation counter and element state:
-//   - Bits [31:2]: Generation counter (30 bits, ~1 billion generations)
-//   - Bits [1:0]:  State (4 possible states)
-//
-// This encoding enables:
-//   - O(1) state checks via bitwise AND
-//   - Generation increment that preserves state (add 0b100)
-//   - State transitions that preserve generation (modify low 2 bits only)
 
-/// Mask to extract the state bits from `vers`.
+/// Mask to extract the state bits from a raw `u32` version.
 pub(crate) const STATE_MASK: u32 = 0b11;
 
-/// Element is on the free list, available for allocation.
-/// Links point to adjacent free list elements.
-pub(crate) const STATE_FREE: u32 = 0b00;
-
 /// Element contains user data and is linked in a PieList.
-pub(crate) const STATE_USED: u32 = 0b01;
-
-/// Element is a list sentinel (no data, but has links).
-/// Each PieList has exactly one sentinel.
-pub(crate) const STATE_SENTINEL: u32 = 0b10;
-
-/// Element had its data removed but hasn't been returned to free list.
-/// Used as an intermediate state during deletion.
-pub(crate) const STATE_ZOMBIE: u32 = 0b11;
-
-/// Added to `vers` to increment generation by 1 (skips over state bits).
-const GEN_INCREMENT: u32 = 0b100;
+pub(crate) const STATE_USED: u32 = ElemState::Used as u32;
 
 /// The fundamental node structure for a doubly-linked list.
+///
+/// This struct contains element metadata (links + generation/state) and user data.
+/// The compact `Slot` type is used for links instead of full `Index<T>`, saving
+/// 8 bytes per element compared to storing full indices.
 pub struct Elem<T> {
-    pub(crate) next: Index<T>,
-    pub(crate) prev: Index<T>,
-    /// Stores both the generation count and the state (Free/Used/Sentinel).
-    pub(crate) vers: u32,
+    /// Slot index of the next element (`Slot::NONE` = no link).
+    pub(crate) next: Slot,
+    /// Slot index of the previous element (`Slot::NONE` = no link).
+    pub(crate) prev: Slot,
+    /// Generation counter and element state.
+    pub(crate) vers: Generation,
+    /// User data (only valid when state is USED).
     pub(crate) data: MaybeUninit<T>,
 }
 
-impl<T> Clone for Elem<T>
-where T: Clone {
+impl<T: Clone> Clone for Elem<T> {
     fn clone(&self) -> Self {
         Self {
             next: self.next,
             prev: self.prev,
             vers: self.vers,
             data: if self.is_used() {
-                // SAFETY: is_used() checks the state bits, confirming data initialization.
                 #[allow(unsafe_code)]
                 MaybeUninit::new(unsafe { self.data.assume_init_ref().clone() })
             } else {
@@ -122,14 +127,12 @@ where T: Clone {
     }
 }
 
-// Manual implementation of PartialEq
 impl<T: PartialEq> PartialEq for Elem<T> {
     fn eq(&self, other: &Self) -> bool {
         if self.vers != other.vers || self.next != other.next || self.prev != other.prev {
             return false;
         }
         if self.is_used() {
-            // SAFETY: is_used() confirms data is initialized
             #[allow(unsafe_code)]
             unsafe {
                 self.data.assume_init_ref() == other.data.assume_init_ref()
@@ -142,264 +145,274 @@ impl<T: PartialEq> PartialEq for Elem<T> {
 
 impl<T: Eq> Eq for Elem<T> {}
 
-// Manual implementation of Debug
 impl<T: fmt::Debug> fmt::Debug for Elem<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut dbg = f.debug_struct("ListElem");
+        let mut dbg = f.debug_struct("Elem");
         dbg.field("next", &self.next);
         dbg.field("prev", &self.prev);
         dbg.field("vers", &self.vers);
+        dbg.field("state", &self.state());
         if self.is_used() {
-            // SAFETY: Checked is_used()
             #[allow(unsafe_code)]
             dbg.field("data", unsafe { self.data.assume_init_ref() });
-        } else if self.is_sentinel() {
-            dbg.field("data", &"<sentinel>");
-        } else if self.is_zombie() {
-            dbg.field("data", &"<zombie>");
-        } else {
-            dbg.field("data", &"<free>");
         }
         dbg.finish()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<T: serde::Serialize> serde::Serialize for Elem<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Elem", 4)?;
+        state.serialize_field("next", &self.next)?;
+        state.serialize_field("prev", &self.prev)?;
+        state.serialize_field("vers", &self.vers.as_raw())?;
+        if self.is_used() {
+            #[allow(unsafe_code)]
+            let data_ref: Option<&T> = Some(unsafe { self.data.assume_init_ref() });
+            state.serialize_field("data", &data_ref)?;
+        } else {
+            state.serialize_field::<Option<T>>("data", &None)?;
+        }
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Elem<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct ElemData<T> {
+            next: Slot,
+            prev: Slot,
+            vers: u32,
+            data: Option<T>,
+        }
+
+        let helper = ElemData::deserialize(deserializer)?;
+        Ok(Self {
+            next: helper.next,
+            prev: helper.prev,
+            vers: Generation::from_raw(helper.vers),
+            data: match helper.data {
+                Some(d) => MaybeUninit::new(d),
+                None => MaybeUninit::uninit(),
+            },
+        })
     }
 }
 
 impl<T> Default for Elem<T> {
     fn default() -> Self {
         Self {
-            next: Index::NONE,
-            prev: Index::NONE,
-            vers: STATE_FREE, // Default is free
+            next: Slot::NONE,
+            prev: Slot::NONE,
+            vers: Generation::new(ElemState::Free),
             data: MaybeUninit::uninit(),
         }
     }
 }
 
 impl<T> Elem<T> {
-    /// A builder-style method to set the data for this element.
+    /// Creates a new element with the given slot as both next and prev.
+    /// Used for creating self-referencing sentinels.
     #[inline]
-    pub fn with_data(mut self, data: T) -> Self {
-        self.data = MaybeUninit::new(data);
-        // Retain generation, set state to USED
-        self.vers = (self.vers & !STATE_MASK) | STATE_USED;
-        self
+    pub fn new_self_ref(slot: Slot, state: ElemState) -> Self {
+        Self {
+            next: slot,
+            prev: slot,
+            vers: Generation::new(state),
+            data: MaybeUninit::uninit(),
+        }
     }
 
-    /// A builder-style method to set both `next` and `prev` links.
+    /// Creates a new element with the given slot as both next and prev,
+    /// using a raw u32 state value (for backward compatibility).
     #[inline]
-    pub fn with_both(mut self, index: Index<T>) -> Self {
-        self.next = index;
-        self.prev = index;
-        self
+    pub fn new_self_ref_raw(slot: Slot, state: u32) -> Self {
+        Self {
+            next: slot,
+            prev: slot,
+            vers: Generation::from_raw(state),
+            data: MaybeUninit::uninit(),
+        }
     }
 
-    // --- State Checkers ---
+    // --- State Checkers (delegate to Generation) ---
 
     #[inline(always)]
     pub fn is_sentinel(&self) -> bool {
-        (self.vers & STATE_MASK) == STATE_SENTINEL
+        self.vers.is_sentinel()
     }
 
     /// Checks if the element is in use (i.e., contains user data).
     #[inline]
     pub fn is_used(&self) -> bool {
-        (self.vers & STATE_MASK) == STATE_USED
+        self.vers.is_used()
     }
 
     #[inline]
     pub fn is_free(&self) -> bool {
-        (self.vers & STATE_MASK) == STATE_FREE
+        self.vers.is_free()
     }
 
     #[inline]
     pub fn is_zombie(&self) -> bool {
-        (self.vers & STATE_MASK) == STATE_ZOMBIE
+        self.vers.is_zombie()
+    }
+
+    /// Returns the current element state.
+    #[inline]
+    pub fn state(&self) -> ElemState {
+        self.vers.state()
+    }
+
+    /// Returns the generation as a raw u32 (for Index compatibility).
+    #[inline]
+    pub fn vers_raw(&self) -> u32 {
+        self.vers.as_raw()
     }
 
     // --- State Transitions ---
 
     /// Bumps the generation count and sets the state to `new_state`.
-    /// Returns the new version integer.
-    pub(crate) fn bump_gen(&mut self, new_state: u32) -> u32 {
-        // 1. Clear the old state bits
-        let clean_vers = self.vers & !STATE_MASK;
-        // 2. Increment the generation part (handles wrapping automatically via overflow)
-        // 3. OR in the new state
-        self.vers = clean_vers.wrapping_add(GEN_INCREMENT) | new_state;
-        self.vers
+    /// Returns the new version as a raw u32.
+    #[inline]
+    pub(crate) fn bump_gen(&mut self, new_state: ElemState) -> u32 {
+        self.vers = self.vers.bump_to(new_state);
+        self.vers.as_raw()
     }
 
-    /// Transitions a free node to a used node, initializing it with data.
-    /// Returns the new version number for the Index.
-    pub fn make_used(&mut self, data: T) -> u32 {
-        debug_assert!(self.is_free(), "Element must be free to become used");
-        self.data = MaybeUninit::new(data);
-        self.bump_gen(STATE_USED)
-    }
-
-    /// Transitions a used/sentinel node to a free node, dropping data if present.
+    /// Transitions to USED state and bumps generation.
     /// Returns the new version number.
+    #[inline]
+    pub fn make_used(&mut self) -> u32 {
+        debug_assert!(self.is_free() || self.is_zombie(), "Element must be free or zombie to become used");
+        self.bump_gen(ElemState::Used)
+    }
+
+    /// Transitions to FREE state and bumps generation.
+    /// Returns the new version number.
+    #[inline]
     pub fn make_free(&mut self) -> u32 {
         debug_assert!(!self.is_free(), "Element must not already be free");
-        if self.is_used() {
-            // SAFETY: We are dropping the data.
-            #[allow(unsafe_code)]
-            unsafe { self.data.assume_init_drop(); }
-        }
-        // If it was Zombie, data is already gone, so we just transition.
-
-        // Safety: Prevent using old data bits
-        self.data = MaybeUninit::uninit();
-        self.bump_gen(STATE_FREE)
+        self.bump_gen(ElemState::Free)
     }
 
-    /// Transitions a free node to a sentinel.
+    /// Transitions to ZOMBIE state (data removed but not yet freed).
+    /// Preserves generation, only changes state bits.
+    #[inline]
+    pub fn make_zombie(&mut self) {
+        debug_assert!(self.is_used(), "Element must be used to become zombie");
+        self.vers = self.vers.with_state(ElemState::Zombie);
+    }
+
+    /// Transitions to SENTINEL state and bumps generation.
     /// Returns the new version number.
+    #[inline]
     pub fn make_sentinel(&mut self) -> u32 {
-        debug_assert!(self.is_free(), "Element must be free to become a sentinel");
-        self.bump_gen(STATE_SENTINEL)
+        debug_assert!(self.is_free() || self.is_zombie(), "Element must be free or zombie to become sentinel");
+        self.bump_gen(ElemState::Sentinel)
     }
 
     /// Force sets the state to sentinel (used during init).
+    #[inline]
+    #[allow(dead_code)]
     pub(crate) fn force_sentinel(&mut self) {
-        self.vers = (self.vers & !STATE_MASK) | STATE_SENTINEL;
+        self.vers = self.vers.with_state(ElemState::Sentinel);
     }
 
+    // --- Link Operations ---
+
+    /// Sets the next link and returns the old value.
     #[inline]
-    pub fn new_next(&mut self, next: Index<T>) -> Index<T> {
+    pub fn set_next(&mut self, next: Slot) -> Slot {
         mem::replace(&mut self.next, next)
     }
 
+    /// Sets the prev link and returns the old value.
     #[inline]
-    pub fn new_prev(&mut self, prev: Index<T>) -> Index<T> {
+    pub fn set_prev(&mut self, prev: Slot) -> Slot {
         mem::replace(&mut self.prev, prev)
     }
 
+    /// Sets both links and returns the old values as (old_prev, old_next).
     #[inline]
-    pub fn new_links(&mut self, prev: Index<T>, next: Index<T>) -> (Index<T>, Index<T>) {
+    pub fn set_links(&mut self, prev: Slot, next: Slot) -> (Slot, Slot) {
         let old_prev = mem::replace(&mut self.prev, prev);
         let old_next = mem::replace(&mut self.next, next);
         (old_prev, old_next)
     }
 
-    /// Replaces the data in this element with `new_data`.
-    /// Returns `Some(old_data)` if the element was previously in use, or `None` if it was free/sentinel.
-    pub fn replace_data(&mut self, new_data: T) -> Option<T> {
-        let old_data = if self.is_used() {
-            // SAFETY: We are about to overwrite this data.
-            #[allow(unsafe_code)]
-            Some(unsafe { self.data.assume_init_read() })
-        } else {
-            None
-        };
-
-        // If we are Used OR Zombie, we become Used with data.
-        if self.is_used() || self.is_zombie() {
-            self.data = MaybeUninit::new(new_data);
-            // Ensure state is USED (fix Zombie state)
-            self.vers = (self.vers & !STATE_MASK) | STATE_USED;
-        }
-        old_data
-    }
-
-    /// Takes the data out of the element, transitioning it to a Zombie state.
-    /// This preserves the generation count but changes the state bits,
-    /// signaling that the data is gone but the node is not yet Free.
-    pub(crate) fn take_data(&mut self) -> Option<T> {
-        if self.is_used() {
-            #[allow(unsafe_code)]
-            let val = unsafe { self.data.assume_init_read() };
-            // Transition to Zombie: Keep generation, set state to 11
-            self.vers = (self.vers & !STATE_MASK) | STATE_ZOMBIE;
-            Some(val)
-        } else {
-            None
-        }
-    }
-
+    /// Returns both links as (prev, next).
     #[inline]
-    pub fn links(&self) -> (Index<T>, Index<T>) {
+    pub fn links(&self) -> (Slot, Slot) {
         (self.prev, self.next)
     }
+
+    // --- Data Access ---
+
+    /// Returns a reference to the data (assumes USED state, caller must verify).
+    ///
+    /// # Safety
+    /// Caller must ensure the element is in USED state.
+    #[inline]
+    #[allow(unsafe_code)]
+    pub unsafe fn data_ref_unchecked(&self) -> &T {
+        unsafe { self.data.assume_init_ref() }
+    }
+
+    /// Returns a mutable reference to the data (assumes USED state, caller must verify).
+    ///
+    /// # Safety
+    /// Caller must ensure the element is in USED state.
+    #[inline]
+    #[allow(unsafe_code)]
+    pub unsafe fn data_mut_unchecked(&mut self) -> &mut T {
+        unsafe { self.data.assume_init_mut() }
+    }
+
+    /// Takes the data out (assumes USED state, caller must verify).
+    ///
+    /// # Safety
+    /// Caller must ensure the element is in USED state and will handle state transition.
+    #[inline]
+    #[allow(unsafe_code)]
+    pub unsafe fn take_data_unchecked(&mut self) -> T {
+        unsafe { self.data.assume_init_read() }
+    }
+
+    /// Writes data into the element's storage.
+    ///
+    /// Does NOT change the element state - caller must handle that.
+    #[inline]
+    pub fn write_data(&mut self, data: T) {
+        self.data = MaybeUninit::new(data);
+    }
 }
 
-impl<T> fmt::Display for Elem<T> {
+impl<T: fmt::Display> fmt::Display for Elem<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let prev_str = self.prev.to_string();
+        let next_str = self.next.to_string();
+
         if self.is_used() {
-            write!(f, "<{}[#]{}>", self.prev, self.next)
+            #[allow(unsafe_code)]
+            let data = unsafe { self.data.assume_init_ref() };
+            write!(f, "<{}[{}]{}>", prev_str, data, next_str)
         } else if self.is_sentinel() {
-            write!(f, "<{}>|<{}>", self.prev, self.next)
+            write!(f, "<{}>|<{}>", prev_str, next_str)
         } else if self.is_zombie() {
-            write!(f, "<{}[z]{}>", self.prev, self.next)
+            write!(f, "<{}[z]{}>", prev_str, next_str)
         } else {
-            write!(f, "<{}<->{}>", self.prev, self.next)
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-mod serde_impl {
-    use super::{Elem, Index};
-    use core::mem::MaybeUninit;
-    use serde::{Serialize, Deserialize, Serializer, Deserializer};
-
-    // Proxy for Serialization: Uses a reference (&T) to avoid cloning
-    #[derive(Serialize)]
-    struct SerializeProxy<'a, T> {
-        next: Index<T>,
-        prev: Index<T>,
-        vers: u32,
-        data: Option<&'a T>,
-    }
-
-    // Proxy for Deserialization: Must own the data (T)
-    #[derive(Deserialize)]
-    #[serde(bound(deserialize = "T: Deserialize<'de>"))]
-    struct DeserializeProxy<T> {
-        next: Index<T>,
-        prev: Index<T>,
-        vers: u32,
-        data: Option<T>,
-     }
-
-    impl<T: Serialize> Serialize for Elem<T> {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let data = if self.is_used() {
-                #[allow(unsafe_code)]
-                Some(unsafe { self.data.assume_init_ref() })
-            } else {
-                None
-            };
-            let proxy = SerializeProxy {
-                next: self.next,
-                prev: self.prev,
-                vers: self.vers,
-                data,
-            };
-            proxy.serialize(serializer)
-        }
-    }
-
-    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Elem<T> {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let proxy = DeserializeProxy::<T>::deserialize(deserializer)?;
-            let data = if let Some(data) = proxy.data {
-                MaybeUninit::new(data)
-            } else {
-                MaybeUninit::uninit()
-            };
-            Ok(Elem {
-                next: proxy.next,
-                prev: proxy.prev,
-                vers: proxy.vers,
-                data,
-            })
+            write!(f, "<{}<->{}>", prev_str, next_str)
         }
     }
 }
@@ -407,77 +420,107 @@ mod serde_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::Index;
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct MyElemData {
-        value: i32,
-    }
-
-    impl fmt::Display for MyElemData {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "{}", self.value)
-        }
-    }
 
     #[test]
     fn test_default_creation() {
-        let elem = Elem::<MyElemData>::default();
-        assert_eq!(elem.next, Index::NONE);
-        assert_eq!(elem.prev, Index::NONE);
+        let elem: Elem<i32> = Elem::default();
+        assert_eq!(elem.next, Slot::NONE);
+        assert_eq!(elem.prev, Slot::NONE);
+        assert!(elem.is_free());
         assert!(!elem.is_used());
+        assert!(!elem.is_sentinel());
+        assert!(!elem.is_zombie());
     }
 
     #[test]
-    fn test_builder_methods_and_equality() {
-        let data = MyElemData { value: 100 };
-        let index = Index::<MyElemData>::from(42_u32);
-
-        let elem1 = Elem::default().with_data(data);
-        let elem2 = Elem::default().with_data(data);
-
-        assert_eq!(elem1, elem2);
-        assert!(elem1.is_used());
-
-        let elem3 = Elem::default().with_data(MyElemData { value: 200 });
-        assert_ne!(elem1, elem3);
-
-        let elem_links = Elem::default().with_both(index);
-        assert_eq!(elem_links.next, index);
-        assert_eq!(elem_links.prev, index);
-        assert!(!elem_links.is_used());
+    fn test_self_ref_creation() {
+        let elem: Elem<i32> = Elem::new_self_ref(Slot::new(42), ElemState::Sentinel);
+        assert_eq!(elem.next, Slot::new(42));
+        assert_eq!(elem.prev, Slot::new(42));
+        assert!(elem.is_sentinel());
+        assert_eq!(elem.state(), ElemState::Sentinel);
     }
 
     #[test]
-    fn test_replace_data() {
-        let mut elem = Elem::default().with_data(MyElemData { value: 10 });
+    fn test_state_transitions() {
+        let mut elem: Elem<i32> = Elem::default();
+        assert!(elem.is_free());
+        assert_eq!(elem.state(), ElemState::Free);
 
-        // Replace existing data
-        let old = elem.replace_data(MyElemData { value: 20 });
-        assert_eq!(old, Some(MyElemData { value: 10 }));
+        // Free -> Used
+        let vers1 = elem.make_used();
+        assert!(elem.is_used());
+        assert_eq!(elem.vers_raw(), vers1);
+        assert_eq!(elem.state(), ElemState::Used);
+
+        // Used -> Zombie (no bump)
+        elem.make_zombie();
+        assert!(elem.is_zombie());
+        assert_eq!(elem.state(), ElemState::Zombie);
+        // Generation counter unchanged
+        assert!(elem.vers.same_counter(Generation::from_raw(vers1)));
+
+        // Zombie -> Free
+        let vers2 = elem.make_free();
+        assert!(elem.is_free());
+        // Generation bumped
+        assert!(vers2 > vers1);
+    }
+
+    #[test]
+    fn test_link_operations() {
+        let mut elem: Elem<i32> = Elem::default();
+
+        // Set individual links
+        let old_next = elem.set_next(Slot::new(10));
+        assert_eq!(old_next, Slot::NONE);
+        assert_eq!(elem.next, Slot::new(10));
+
+        let old_prev = elem.set_prev(Slot::new(20));
+        assert_eq!(old_prev, Slot::NONE);
+        assert_eq!(elem.prev, Slot::new(20));
+
+        // Set both links
+        let (old_prev, old_next) = elem.set_links(Slot::new(30), Slot::new(40));
+        assert_eq!(old_prev, Slot::new(20));
+        assert_eq!(old_next, Slot::new(10));
+        assert_eq!(elem.links(), (Slot::new(30), Slot::new(40)));
+    }
+
+    #[test]
+    fn test_generation_bump() {
+        let mut elem: Elem<i32> = Elem::default();
+        let gen0 = elem.vers.counter();
+
+        elem.bump_gen(ElemState::Used);
+        let gen1 = elem.vers.counter();
+        assert_eq!(gen1, gen0 + 1);
+
+        elem.bump_gen(ElemState::Free);
+        let gen2 = elem.vers.counter();
+        assert_eq!(gen2, gen1 + 1);
+    }
+
+    #[test]
+    fn test_data_operations() {
+        let mut elem: Elem<String> = Elem::default();
+
+        // Write data and mark as used
+        elem.write_data("hello".to_string());
+        elem.make_used();
+
+        // Now we can access data
         #[allow(unsafe_code)]
-        let data = unsafe { elem.data.assume_init_ref() };
-        assert_eq!(*data, MyElemData { value: 20 });
+        unsafe {
+            assert_eq!(elem.data_ref_unchecked(), "hello");
 
-        // Replace on a free node
-        let mut free_elem = Elem::<MyElemData>::default();
-        assert!(free_elem.is_free());
-        let old_free = free_elem.replace_data(MyElemData { value: 99 });
-        assert_eq!(old_free, None);
-        assert!(!free_elem.is_used()); // replacing data on free node should not make it used
-    }
+            // Mutate data
+            *elem.data_mut_unchecked() = "world".to_string();
+            assert_eq!(elem.data_ref_unchecked(), "world");
 
-    #[test]
-    fn test_debug_impl() {
-        let elem = Elem::default().with_data(MyElemData { value: 55 });
-        let debug_str = format!("{:?}", elem);
-        // Ensure debug implementation is stable
-        assert!(debug_str.contains("ListElem"));
-        assert!(debug_str.contains("data: MyElemData"));
-        assert!(debug_str.contains("55"));
-
-        let empty_elem = Elem::<MyElemData>::default();
-        let debug_str_empty = format!("{:?}", empty_elem);
-        assert!(debug_str_empty.contains("<free>"));
+            // Take data
+            let taken = elem.take_data_unchecked();
+            assert_eq!(taken, "world");
+        }
     }
 }

@@ -65,6 +65,7 @@
 
 use crate::{ElemPool, Index, PieList};
 use crate::IndexMap;
+use crate::slot::Slot;
 use core::{error, fmt, mem};
 use alloc::{format, string::ToString, vec, vec::Vec};
 #[cfg(feature = "serde")]
@@ -322,10 +323,10 @@ impl<K: Ord, V> FibHeap<K, V> {
             let last_child = self.pool.prev(min_node_data.children.sentinel);
             let root_last = self.pool.prev(self.roots.sentinel);
             // Splice children into the root list.
-            self.pool.get_mut(root_last).unwrap().new_next(first_child);
-            self.pool.get_mut(first_child).unwrap().new_prev(root_last);
-            self.pool.get_mut(last_child).unwrap().new_next(self.roots.sentinel);
-            self.pool.get_mut(self.roots.sentinel).unwrap().new_prev(last_child);
+            self.pool.get_elem_mut(root_last).unwrap().set_next(Slot::new(first_child.slot));
+            self.pool.get_elem_mut(first_child).unwrap().set_prev(Slot::new(root_last.slot));
+            self.pool.get_elem_mut(last_child).unwrap().set_next(Slot::new(self.roots.sentinel.slot));
+            self.pool.get_elem_mut(self.roots.sentinel).unwrap().set_prev(Slot::new(last_child.slot));
             self.roots.len += num_children;
             // Un-parent all moved children.
             let mut current = first_child;
@@ -359,8 +360,9 @@ impl<K: Ord, V> FibHeap<K, V> {
             handles.push(current);
             current = self.pool.next(current);
         }
-        self.pool.get_mut(self.roots.sentinel).unwrap()
-            .new_links(self.roots.sentinel, self.roots.sentinel);
+        let roots_slot = Slot::new(self.roots.sentinel.slot);
+        self.pool.get_elem_mut(self.roots.sentinel).unwrap()
+            .set_links(roots_slot, roots_slot);
         self.roots.len = 0;
         for &handle in &handles {
             let mut x = handle;
@@ -512,18 +514,26 @@ impl<K: Ord, V> FibHeap<K, V> {
         // The pool's shrink method fixes `prev/next` links, but it knows nothing
         // about the `parent` or `children` fields inside our `Node` struct.
         // We must traverse the pool and update them manually.
-        for elem in self.pool.iter_mut() {
-            if elem.is_used() {
-                // SAFETY: We just checked is_used()
-                #[allow(unsafe_code)]
-                let node = unsafe { elem.data.assume_init_mut() };
-                // Fix parent pointer
-                if let Some(new_parent) = map.get(&node.parent) {
-                    node.parent = *new_parent;
+        // First, collect all used slot+version pairs to avoid borrowing conflicts.
+        let used_indices: Vec<Index<Node<K, V>>> = self.pool.iter_elems()
+            .enumerate()
+            .filter_map(|(slot, elem)| {
+                if elem.is_used() {
+                    Some(Index::new(slot as u32, elem.vers_raw()))
+                } else {
+                    None
                 }
-                // Fix children list sentinel pointer
-                node.children.remap(&map);
+            })
+            .collect();
+        // Now we can mutably access each node's data.
+        for index in used_indices {
+            let node = self.pool.data_mut(index).unwrap();
+            // Fix parent pointer
+            if let Some(new_parent) = map.get(&node.parent) {
+                node.parent = *new_parent;
             }
+            // Fix children list sentinel pointer
+            node.children.remap(&map);
         }
         map
     }

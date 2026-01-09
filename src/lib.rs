@@ -74,7 +74,7 @@
 #![deny(unsafe_code)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// We need 'alloc' to be available unconditionally because we use 
+// We need 'alloc' to be available unconditionally because we use
 // 'alloc::vec::Vec' in pool.rs to support both std and no_std targets.
 extern crate alloc;
 extern crate core;
@@ -91,10 +91,12 @@ pub(crate) type IndexMap<K, V> = alloc::collections::BTreeMap<K, V>;
 mod cursor;
 mod cursor_mut;
 mod elem;
+pub mod generation;
 mod index;
 mod list;
 mod pool;
 mod heap;
+pub mod slot;
 #[cfg(feature = "petgraph")]
 mod petgraph;
 mod view;

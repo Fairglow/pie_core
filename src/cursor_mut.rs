@@ -153,21 +153,26 @@ impl<'a, T> CursorMut<'a, T> {
     /// - If "After End": Stays at "After End" (no-op).
     #[inline]
     pub fn move_next(&mut self, pool: &ElemPool<T>) {
+        let sentinel_slot = self.list.sentinel.slot as usize;
+        let current_slot = self.current.slot as usize;
+
         // Case 1: Already at "After End"
-        if self.current == self.list.sentinel && self.logical_index == self.list.len() {
+        if current_slot == sentinel_slot && self.logical_index == self.list.len() {
             return;
         }
 
         // Case 2: At "Before Start" -> Move to Head
-        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
-            self.current = pool.next(self.list.sentinel);
+        if current_slot == sentinel_slot && self.logical_index == usize::MAX {
+            let next_slot = pool.next_slot(sentinel_slot).unwrap();
+            self.current = pool.index_from_slot(next_slot);
             self.logical_index = 0;
             return;
         }
 
-        // Case 3: Valid element
-        self.current = pool.next(self.current);
-        if self.current == self.list.sentinel {
+        // Case 3: Valid element - use slot-based navigation
+        let next_slot = pool.next_slot(current_slot).unwrap();
+        self.current = pool.index_from_slot(next_slot);
+        if next_slot == sentinel_slot {
             self.logical_index = self.list.len();
         } else {
             self.logical_index += 1;
@@ -181,25 +186,30 @@ impl<'a, T> CursorMut<'a, T> {
     /// - If "Before Start": Stays at "Before Start" (no-op).
     #[inline]
     pub fn move_prev(&mut self, pool: &ElemPool<T>) {
+        let sentinel_slot = self.list.sentinel.slot as usize;
+        let current_slot = self.current.slot as usize;
+
         // Case 1: Already at "Before Start"
-        if self.current == self.list.sentinel && self.logical_index == usize::MAX {
+        if current_slot == sentinel_slot && self.logical_index == usize::MAX {
             return;
         }
 
         // Case 2: At "After End" -> Move to Tail
-        if self.current == self.list.sentinel && self.logical_index == self.list.len() {
+        if current_slot == sentinel_slot && self.logical_index == self.list.len() {
             if self.list.is_empty() {
                 self.logical_index = usize::MAX; // Empty list: After End -> Before Start
                 return;
             }
-            self.current = pool.prev(self.list.sentinel);
+            let prev_slot = pool.prev_slot(sentinel_slot).unwrap();
+            self.current = pool.index_from_slot(prev_slot);
             self.logical_index = self.list.len() - 1;
             return;
         }
 
-        // Case 3: Valid element
-        self.current = pool.prev(self.current);
-        if self.current == self.list.sentinel {
+        // Case 3: Valid element - use slot-based navigation
+        let prev_slot = pool.prev_slot(current_slot).unwrap();
+        self.current = pool.index_from_slot(prev_slot);
+        if prev_slot == sentinel_slot {
             self.logical_index = usize::MAX; // Moved before first element
         } else {
             self.logical_index -= 1;
@@ -210,7 +220,9 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// If the list is empty, results in "After End" (index 0, len 0).
     pub fn move_to_front(&mut self, pool: &ElemPool<T>) {
-        self.current = pool.next(self.list.sentinel);
+        let sentinel_slot = self.list.sentinel.slot as usize;
+        let next_slot = pool.next_slot(sentinel_slot).unwrap();
+        self.current = pool.index_from_slot(next_slot);
         self.logical_index = 0;
     }
 
@@ -218,7 +230,9 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// If the list is empty, results in "After End" (index 0, len 0).
     pub fn move_to_back(&mut self, pool: &ElemPool<T>) {
-        self.current = pool.prev(self.list.sentinel);
+        let sentinel_slot = self.list.sentinel.slot as usize;
+        let prev_slot = pool.prev_slot(sentinel_slot).unwrap();
+        self.current = pool.index_from_slot(prev_slot);
         if self.list.is_empty() {
             self.logical_index = 0;
         } else {

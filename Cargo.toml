@@ -48,11 +48,11 @@ bench-nightly = []
 
 [dev-dependencies]
 criterion = "0.8"
-fibonacci_heap = "0.8"
+fibonacci_heap = "0.9"
 index_list = "0.3"
 petgraph = "0.8"
 priority-queue = "2.7"
-rand = "0.9"
+rand = "0.10"
 serde_json = "1.0"
 
 [[bench]]

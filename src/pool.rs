@@ -1013,7 +1013,7 @@ impl<T> Drop for ElemPool<T> {
 
 #[cfg(test)]
 mod tests {
-    use rand::Rng;
+    use rand::RngExt;
     use super::*;
     use crate::list::PieList;
 

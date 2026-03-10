@@ -189,8 +189,7 @@ This separation is crucial for:
 
 ```rust
 pub struct ElemPool<T> {
-    elems: Vec<Elem>,          // Element metadata (12 bytes each)
-    data: Vec<MaybeUninit<T>>, // User data (parallel array)
+    elems: Vec<Elem<T>>,       // Contiguous elements (metadata + data inline)
     freed: usize,              // Count of free elements
     used: usize,               // Count of data-holding elements
 }

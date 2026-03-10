@@ -33,6 +33,7 @@ use core::iter::Extend;
 ///
 /// assert!(list.is_empty());
 /// ```
+#[must_use]
 pub struct PieViewMut<'a, T> {
     pub(crate) list: &'a mut PieList<T>,
     pub(crate) pool: &'a mut ElemPool<T>,

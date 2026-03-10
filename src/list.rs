@@ -56,17 +56,16 @@
 //! - `PieList<T>` is only 24 bytes (Index + len + debug flag)
 //! - Creating a list allocates one sentinel element from the pool
 //! - Moving a list is cheap (just copies the handle)
-//! - Cloning a list creates a shallow copy sharing the same sentinel
 
-// Allow unsafe for the performance-critical iterator implementation.
-#![allow(unsafe_code)]
+// Unsafe code is used in targeted locations for iterator performance.
+// Each usage is individually annotated with #[allow(unsafe_code)] and a SAFETY comment.
 
 extern crate alloc;
 
 use crate::{Cursor, CursorMut, ElemPool, Index, IndexError, IndexMap,
             PieView, PieViewMut};
 use crate::slot::Slot;
-use core::{cmp, marker::PhantomData};
+use core::{cmp, iter::FusedIterator, marker::PhantomData};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -99,6 +98,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(bound = ""))]
+#[must_use]
 pub struct PieList<T> {
     /// The index of the sentinel node for this list. The sentinel's `next`
     /// points to the head of the list, and its `prev` points to the tail.
@@ -109,14 +109,27 @@ pub struct PieList<T> {
     check_leak: bool,
 }
 
-impl<T> Clone for PieList<T> {
+impl<T> PieList<T> {
+    /// Creates a shallow copy of the list handle.
+    ///
+    /// # Safety Warning
+    ///
+    /// This creates a second handle pointing to the **same sentinel and elements**.
+    /// Both handles will refer to the exact same underlying data in the pool.
+    /// Modifications through one handle (push, pop, clear) will be visible
+    /// through the other, and clearing one will invalidate the other.
+    ///
+    /// This is intended **only** for internal use where a temporary copy of the
+    /// list metadata is needed (e.g., reading `children` in `FibHeap` operations
+    /// while the parent node is mutably borrowed). The copy must not outlive the
+    /// operation, and must not be used to perform conflicting mutations.
     #[inline]
-    fn clone(&self) -> Self {
+    pub(crate) fn shallow_copy(&self) -> Self {
         PieList {
             sentinel: self.sentinel,
             len: self.len,
             #[cfg(debug_assertions)]
-            check_leak: self.check_leak,
+            check_leak: false, // Shallow copies never own the elements
         }
     }
 }
@@ -334,7 +347,26 @@ impl<T> PieList<T> {
     /// # Complexity
     /// O(n), where n is the number of elements in the list.
     pub fn clear(&mut self, pool: &mut ElemPool<T>) {
-        while self.pop_front(pool).is_some() {}
+        if self.is_empty() {
+            return;
+        }
+        let sentinel_slot = self.sentinel.slot as usize;
+        let mut current_slot = pool.next_slot(sentinel_slot).unwrap();
+
+        // Walk the chain directly using slots, skipping the per-element
+        // linkout overhead that pop_front would perform.
+        while current_slot != sentinel_slot {
+            let next_slot = pool.next_slot(current_slot).unwrap();
+            let current_idx = pool.index_from_slot(current_slot);
+            pool.data_swap(current_idx, None);
+            pool.index_del(current_idx).unwrap();
+            current_slot = next_slot;
+        }
+
+        // Reset sentinel to point to itself (empty list).
+        let sentinel_slot_val = Slot::new(self.sentinel.slot);
+        pool.elem_mut(sentinel_slot).set_links(sentinel_slot_val, sentinel_slot_val);
+        self.len = 0;
     }
 
     /// Creates a draining iterator that removes all elements from the list and
@@ -438,12 +470,15 @@ impl<T> PieList<T> {
 
         // Pre-allocate sentinel nodes for the stack slots we'll need.
         // For a list of length n, we need at most ceil(log2(n)) + 1 sentinels.
+        // Use a fixed-size array to avoid heap allocation.
         let needed_sentinels = (usize::BITS - self.len().leading_zeros()) as usize;
-        let mut temp_sentinels: alloc::vec::Vec<Index<T>> = alloc::vec::Vec::with_capacity(needed_sentinels);
+        let mut temp_sentinels = [Index::<T>::NONE; MAX_STACK_SIZE];
+        let mut sentinel_count: usize = 0;
         for _ in 0..needed_sentinels {
             let sentinel = pool.index_new().expect("Pool failed to allocate temp sentinel");
             let sentinel = pool.index_make_sentinel(sentinel).expect("Failed to make sentinel");
-            temp_sentinels.push(sentinel);
+            temp_sentinels[sentinel_count] = sentinel;
+            sentinel_count += 1;
         }
         let mut next_sentinel_idx = 0;
 
@@ -456,7 +491,7 @@ impl<T> PieList<T> {
             self.len -= 1;
 
             // Get or reuse a sentinel for this new run.
-            let run_sentinel = if next_sentinel_idx < temp_sentinels.len() {
+            let run_sentinel = if next_sentinel_idx < sentinel_count {
                 let s = temp_sentinels[next_sentinel_idx];
                 next_sentinel_idx += 1;
                 s
@@ -496,7 +531,8 @@ impl<T> PieList<T> {
                         // Mark the old sentinel as reusable by resetting it.
                         let old_slot = Slot::new(old_sentinel.slot);
                         let _ = pool.get_elem_mut(old_sentinel).map(|e| e.set_links(old_slot, old_slot));
-                        temp_sentinels.push(old_sentinel);
+                        temp_sentinels[sentinel_count] = old_sentinel;
+                        sentinel_count += 1;
                         slot += 1;
                     }
                 }
@@ -537,7 +573,7 @@ impl<T> PieList<T> {
         }
 
         // Clean up any remaining temporary sentinels.
-        for &sentinel in &temp_sentinels {
+        for sentinel in temp_sentinels.into_iter().take(sentinel_count) {
             // Only delete if not currently in use (i.e., not self.sentinel).
             if sentinel != self.sentinel {
                 let _ = pool.data_swap(sentinel, None);
@@ -915,6 +951,8 @@ impl<'a, T> ExactSizeIterator for Iter<'a, T> {
     }
 }
 
+impl<'a, T> FusedIterator for Iter<'a, T> {}
+
 /// A mutable iterator over the elements of a `PieList`.
 ///
 /// Uses slot-based traversal for maximum performance.
@@ -930,6 +968,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     #[inline]
+    #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
@@ -949,6 +988,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
     #[inline]
+    #[allow(unsafe_code)]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
@@ -970,10 +1010,18 @@ impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
     }
 }
 
+impl<'a, T> FusedIterator for IterMut<'a, T> {}
+
 /// A draining iterator for a `PieList`.
 ///
 /// This struct is created by the [`drain()`] method on [`PieList`].
 /// See its documentation for more.
+///
+/// # Drop Behavior — Differs from `FibHeap::Drain`
+///
+/// **Unlike [`FibHeap::Drain`](crate::heap::Drain)**, dropping this iterator
+/// **will** consume all remaining elements, ensuring the list is fully emptied.
+/// This is safe because each element removal is O(1).
 ///
 /// Uses slot-based traversal for efficient navigation.
 ///
@@ -1034,6 +1082,8 @@ impl<'a, T> ExactSizeIterator for Drain<'a, T> {
         self.len
     }
 }
+
+impl<'a, T> FusedIterator for Drain<'a, T> {}
 
 impl<'a, T> Drop for Drain<'a, T> {
     fn drop(&mut self) {
@@ -1317,6 +1367,22 @@ mod tests {
                 Item { key: 2, val: 'c' }, // 'a' before 'c'
             ]
         );
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_sort_all_equal() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        for _ in 0..8 {
+            list.push_back(42, &mut pool).unwrap();
+        }
+
+        list.sort(&mut pool, |a: &i32, b| a.cmp(b));
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, vec![42; 8]);
+        assert_eq!(list.len(), 8);
         list.clear(&mut pool);
     }
 }

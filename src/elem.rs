@@ -224,7 +224,7 @@ impl<T> Elem<T> {
     /// Creates a new element with the given slot as both next and prev.
     /// Used for creating self-referencing sentinels.
     #[inline]
-    pub fn new_self_ref(slot: Slot, state: ElemState) -> Self {
+    pub(crate) fn new_self_ref(slot: Slot, state: ElemState) -> Self {
         Self {
             next: slot,
             prev: slot,
@@ -236,7 +236,8 @@ impl<T> Elem<T> {
     /// Creates a new element with the given slot as both next and prev,
     /// using a raw u32 state value (for backward compatibility).
     #[inline]
-    pub fn new_self_ref_raw(slot: Slot, state: u32) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new_self_ref_raw(slot: Slot, state: u32) -> Self {
         Self {
             next: slot,
             prev: slot,
@@ -248,35 +249,35 @@ impl<T> Elem<T> {
     // --- State Checkers (delegate to Generation) ---
 
     #[inline(always)]
-    pub fn is_sentinel(&self) -> bool {
+    pub(crate) fn is_sentinel(&self) -> bool {
         self.vers.is_sentinel()
     }
 
     /// Checks if the element is in use (i.e., contains user data).
     #[inline]
-    pub fn is_used(&self) -> bool {
+    pub(crate) fn is_used(&self) -> bool {
         self.vers.is_used()
     }
 
     #[inline]
-    pub fn is_free(&self) -> bool {
+    pub(crate) fn is_free(&self) -> bool {
         self.vers.is_free()
     }
 
     #[inline]
-    pub fn is_zombie(&self) -> bool {
+    pub(crate) fn is_zombie(&self) -> bool {
         self.vers.is_zombie()
     }
 
     /// Returns the current element state.
     #[inline]
-    pub fn state(&self) -> ElemState {
+    pub(crate) fn state(&self) -> ElemState {
         self.vers.state()
     }
 
     /// Returns the generation as a raw u32 (for Index compatibility).
     #[inline]
-    pub fn vers_raw(&self) -> u32 {
+    pub(crate) fn vers_raw(&self) -> u32 {
         self.vers.as_raw()
     }
 
@@ -293,7 +294,7 @@ impl<T> Elem<T> {
     /// Transitions to USED state and bumps generation.
     /// Returns the new version number.
     #[inline]
-    pub fn make_used(&mut self) -> u32 {
+    pub(crate) fn make_used(&mut self) -> u32 {
         debug_assert!(self.is_free() || self.is_zombie(), "Element must be free or zombie to become used");
         self.bump_gen(ElemState::Used)
     }
@@ -301,7 +302,7 @@ impl<T> Elem<T> {
     /// Transitions to FREE state and bumps generation.
     /// Returns the new version number.
     #[inline]
-    pub fn make_free(&mut self) -> u32 {
+    pub(crate) fn make_free(&mut self) -> u32 {
         debug_assert!(!self.is_free(), "Element must not already be free");
         self.bump_gen(ElemState::Free)
     }
@@ -309,7 +310,7 @@ impl<T> Elem<T> {
     /// Transitions to ZOMBIE state (data removed but not yet freed).
     /// Preserves generation, only changes state bits.
     #[inline]
-    pub fn make_zombie(&mut self) {
+    pub(crate) fn make_zombie(&mut self) {
         debug_assert!(self.is_used(), "Element must be used to become zombie");
         self.vers = self.vers.with_state(ElemState::Zombie);
     }
@@ -317,7 +318,7 @@ impl<T> Elem<T> {
     /// Transitions to SENTINEL state and bumps generation.
     /// Returns the new version number.
     #[inline]
-    pub fn make_sentinel(&mut self) -> u32 {
+    pub(crate) fn make_sentinel(&mut self) -> u32 {
         debug_assert!(self.is_free() || self.is_zombie(), "Element must be free or zombie to become sentinel");
         self.bump_gen(ElemState::Sentinel)
     }
@@ -333,19 +334,19 @@ impl<T> Elem<T> {
 
     /// Sets the next link and returns the old value.
     #[inline]
-    pub fn set_next(&mut self, next: Slot) -> Slot {
+    pub(crate) fn set_next(&mut self, next: Slot) -> Slot {
         mem::replace(&mut self.next, next)
     }
 
     /// Sets the prev link and returns the old value.
     #[inline]
-    pub fn set_prev(&mut self, prev: Slot) -> Slot {
+    pub(crate) fn set_prev(&mut self, prev: Slot) -> Slot {
         mem::replace(&mut self.prev, prev)
     }
 
     /// Sets both links and returns the old values as (old_prev, old_next).
     #[inline]
-    pub fn set_links(&mut self, prev: Slot, next: Slot) -> (Slot, Slot) {
+    pub(crate) fn set_links(&mut self, prev: Slot, next: Slot) -> (Slot, Slot) {
         let old_prev = mem::replace(&mut self.prev, prev);
         let old_next = mem::replace(&mut self.next, next);
         (old_prev, old_next)
@@ -353,7 +354,7 @@ impl<T> Elem<T> {
 
     /// Returns both links as (prev, next).
     #[inline]
-    pub fn links(&self) -> (Slot, Slot) {
+    pub(crate) fn links(&self) -> (Slot, Slot) {
         (self.prev, self.next)
     }
 
@@ -365,7 +366,7 @@ impl<T> Elem<T> {
     /// Caller must ensure the element is in USED state.
     #[inline]
     #[allow(unsafe_code)]
-    pub unsafe fn data_ref_unchecked(&self) -> &T {
+    pub(crate) unsafe fn data_ref_unchecked(&self) -> &T {
         unsafe { self.data.assume_init_ref() }
     }
 
@@ -375,7 +376,7 @@ impl<T> Elem<T> {
     /// Caller must ensure the element is in USED state.
     #[inline]
     #[allow(unsafe_code)]
-    pub unsafe fn data_mut_unchecked(&mut self) -> &mut T {
+    pub(crate) unsafe fn data_mut_unchecked(&mut self) -> &mut T {
         unsafe { self.data.assume_init_mut() }
     }
 
@@ -385,7 +386,7 @@ impl<T> Elem<T> {
     /// Caller must ensure the element is in USED state and will handle state transition.
     #[inline]
     #[allow(unsafe_code)]
-    pub unsafe fn take_data_unchecked(&mut self) -> T {
+    pub(crate) unsafe fn take_data_unchecked(&mut self) -> T {
         unsafe { self.data.assume_init_read() }
     }
 
@@ -393,7 +394,7 @@ impl<T> Elem<T> {
     ///
     /// Does NOT change the element state - caller must handle that.
     #[inline]
-    pub fn write_data(&mut self, data: T) {
+    pub(crate) fn write_data(&mut self, data: T) {
         self.data = MaybeUninit::new(data);
     }
 }

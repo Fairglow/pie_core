@@ -66,6 +66,7 @@ use core::fmt;
 /// # list2.clear(&mut pool2);
 /// # list1.clear(&mut pool1);
 /// ```
+#[must_use]
 pub struct PieView<'a, T> {
     pub(crate) list: &'a PieList<T>,
     pub(crate) pool: &'a ElemPool<T>,

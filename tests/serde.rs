@@ -155,3 +155,75 @@ fn test_shrink_before_serialize() {
     container.l.set_leak_check(false);
     loaded.l.set_leak_check(false);
 }
+
+#[test]
+fn test_corrupted_freed_count() {
+    // Build a valid pool, serialize it, tamper with `freed`, then deserialize.
+    let mut pool = ElemPool::new();
+    let mut list = PieList::new(&mut pool);
+    list.push_back(1, &mut pool).unwrap();
+
+    #[derive(Serialize, Deserialize)]
+    struct Container { p: ElemPool<i32>, l: PieList<i32> }
+
+    let mut c = Container { p: pool, l: list };
+    c.l.set_leak_check(false);
+    let mut json: serde_json::Value = serde_json::to_value(&c).unwrap();
+
+    // Tamper: set freed to wrong value
+    json["p"]["freed"] = serde_json::Value::from(999);
+    let result: Result<Container, _> = serde_json::from_value(json);
+    match result {
+        Err(e) => assert!(e.to_string().contains("freed count mismatch"), "unexpected error: {e}"),
+        Ok(_) => panic!("should reject mismatched freed count"),
+    }
+}
+
+#[test]
+fn test_corrupted_used_count() {
+    let mut pool = ElemPool::new();
+    let mut list = PieList::new(&mut pool);
+    list.push_back(1, &mut pool).unwrap();
+
+    #[derive(Serialize, Deserialize)]
+    struct Container { p: ElemPool<i32>, l: PieList<i32> }
+
+    let mut c = Container { p: pool, l: list };
+    c.l.set_leak_check(false);
+    let mut json: serde_json::Value = serde_json::to_value(&c).unwrap();
+
+    // Tamper: set used to wrong value
+    json["p"]["used"] = serde_json::Value::from(0);
+    let result: Result<Container, _> = serde_json::from_value(json);
+    match result {
+        Err(e) => assert!(e.to_string().contains("used count mismatch"), "unexpected error: {e}"),
+        Ok(_) => panic!("should reject mismatched used count"),
+    }
+}
+
+#[test]
+fn test_corrupted_broken_link() {
+    // Serialize a valid pool, then corrupt a next-link so it points out of bounds.
+    let mut pool = ElemPool::new();
+    let mut list = PieList::new(&mut pool);
+    list.push_back(1, &mut pool).unwrap();
+    list.push_back(2, &mut pool).unwrap();
+
+    #[derive(Serialize, Deserialize)]
+    struct Container { p: ElemPool<i32>, l: PieList<i32> }
+
+    let mut c = Container { p: pool, l: list };
+    c.l.set_leak_check(false);
+    let mut json: serde_json::Value = serde_json::to_value(&c).unwrap();
+
+    // Tamper: set the first element's next-link to out-of-bounds
+    // The elems array has entries [sentinel, list-sentinel, elem1, elem2]
+    // Setting elem1's next to 999 should break bidirectional check
+    if let Some(elems) = json["p"]["elems"].as_array_mut() {
+        if let Some(elem) = elems.get_mut(2) {
+            elem["next"] = serde_json::Value::from(999);
+        }
+    }
+    let result: Result<Container, _> = serde_json::from_value(json);
+    assert!(result.is_err(), "should reject broken links");
+}

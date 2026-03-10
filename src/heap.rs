@@ -67,7 +67,7 @@ use crate::{ElemPool, Index, PieList};
 use crate::IndexMap;
 use crate::slot::Slot;
 use core::{error, fmt, mem};
-use alloc::{format, string::ToString, vec, vec::Vec};
+use alloc::{format, string::ToString, vec::Vec};
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 
@@ -128,6 +128,7 @@ pub type FibHandle<K, V> = Index<Node<K, V>>;
 /// - `K`: The key type, which determines the priority of an element. Must implement `Ord`.
 /// - `V`: The value type, which is the data stored in the heap.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[must_use]
 pub struct FibHeap<K, V> {
     /// The pool allocator that stores all nodes for this heap.
     pool: ElemPool<Node<K, V>>,
@@ -137,6 +138,10 @@ pub struct FibHeap<K, V> {
     min: FibHandle<K, V>,
     /// The total number of nodes in the heap.
     len: usize,
+    /// Reusable buffer for collecting root handles during consolidation.
+    /// Stored here to avoid per-consolidation heap allocation.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    consolidate_buf: Vec<FibHandle<K, V>>,
 }
 
 impl<K, V> FibHeap<K, V> {
@@ -153,7 +158,7 @@ impl<K, V> FibHeap<K, V> {
         let mut pool = ElemPool::new();
         // The root list needs its own sentinel, allocated from the pool.
         let roots = PieList::new(&mut pool).without_leak_check();
-        Self { pool, roots, min: FibHandle::NONE, len: 0, }
+        Self { pool, roots, min: FibHandle::NONE, len: 0, consolidate_buf: Vec::new() }
     }
 
     /// Returns the number of elements in the heap.
@@ -197,6 +202,7 @@ impl<K, V> FibHeap<K, V> {
         self.pool = new_pool;
         self.min = FibHandle::NONE;
         self.len = 0;
+        self.consolidate_buf.clear();
     }
 }
 
@@ -352,19 +358,23 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// Consolidates the root list by linking trees of the same degree.
     fn consolidate(&mut self) {
         // Max degree is ~log_phi(n). 64 is safe for n up to 2^64.
-        let mut a: Vec<Option<FibHandle<K, V>>> = vec![None; 64];
+        let mut a: [Option<FibHandle<K, V>>; 64] = [None; 64];
         self.min = FibHandle::NONE;
-        let mut handles = Vec::with_capacity(self.roots.len());
+
+        // Reuse the consolidation buffer to avoid per-call allocation.
+        self.consolidate_buf.clear();
+        self.consolidate_buf.reserve(self.roots.len());
         let mut current = self.pool.next(self.roots.sentinel);
         while current != self.roots.sentinel {
-            handles.push(current);
+            self.consolidate_buf.push(current);
             current = self.pool.next(current);
         }
         let roots_slot = Slot::new(self.roots.sentinel.slot);
         self.pool.get_elem_mut(self.roots.sentinel).unwrap()
             .set_links(roots_slot, roots_slot);
         self.roots.len = 0;
-        for &handle in &handles {
+        for i in 0..self.consolidate_buf.len() {
+            let handle = self.consolidate_buf[i];
             let mut x = handle;
             let mut d = self.pool.data(x).unwrap().degree;
             while let Some(mut y) = a[d] {
@@ -386,7 +396,7 @@ impl<K: Ord, V> FibHeap<K, V> {
 
     /// Links node `y` as a child of node `x`.
     fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
-        let mut x_children = self.pool.data_mut(x).unwrap().children.clone();
+        let mut x_children = self.pool.data_mut(x).unwrap().children.shallow_copy();
         self.pool.index_link_after(y, x_children.sentinel).unwrap();
         x_children.len += 1;
         self.pool.data_mut(x).unwrap().children = x_children;
@@ -453,7 +463,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     fn cut(&mut self, x: FibHandle<K, V>, y: FibHandle<K, V>) {
         // 1. Unlink `x` from `y`'s child list.
         self.pool.index_linkout(x).unwrap();
-        let mut y_children = self.pool.data_mut(y).unwrap().children.clone();
+        let mut y_children = self.pool.data_mut(y).unwrap().children.shallow_copy();
         y_children.len -= 1;
         self.pool.data_mut(y).unwrap().children = y_children;
         self.pool.data_mut(y).unwrap().degree -= 1;
@@ -502,6 +512,7 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// // Safe way to update your handle:
     /// let new_handle = map.get(&handle).copied().unwrap_or(handle);
     /// ```
+    #[must_use = "the remapping table must be used to update external FibHandles"]
     pub fn shrink_to_fit(&mut self) -> IndexMap<FibHandle<K, V>, FibHandle<K, V>> {
         // 1. Shrink the pool. This moves nodes and fixes the Pool-level links.
         let map = self.pool.shrink_to_fit();
@@ -636,7 +647,7 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
         // Prepare the prefix for children
         let child_prefix = format!("{}{}", prefix, if is_last { "   " } else { "│  " });
         // Recursively print children
-        let children_list = node.children.clone();
+        let children_list = node.children.shallow_copy();
         if !children_list.is_empty() {
             let mut current_child = self.pool.next(children_list.sentinel);
             while current_child != children_list.sentinel {
@@ -655,6 +666,15 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
 /// This struct is created by the [`drain()`] method on [`FibHeap`].
 /// See its documentation for more.
 ///
+/// # Drop Behavior — Differs from `PieList::Drain`
+///
+/// **Unlike [`PieList::Drain`](crate::list::Drain)**, dropping this iterator
+/// does **not** consume remaining elements. If the iterator is dropped before
+/// being fully consumed, the heap retains its remaining elements. This is
+/// intentional: each `next()` call performs an O(log n) consolidation, so
+/// automatically draining on drop would be an unexpectedly expensive implicit
+/// operation.
+///
 /// [`drain()`]: FibHeap::drain
 pub struct Drain<'a, K: Ord, V> {
     heap: &'a mut FibHeap<K, V>,
@@ -666,7 +686,19 @@ impl<'a, K: Ord, V> Iterator for Drain<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         self.heap.pop()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.heap.len(), Some(self.heap.len()))
+    }
 }
+
+impl<'a, K: Ord, V> ExactSizeIterator for Drain<'a, K, V> {
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+}
+
+impl<'a, K: Ord, V> core::iter::FusedIterator for Drain<'a, K, V> {}
 
 #[cfg(test)]
 mod tests {
@@ -1104,5 +1136,29 @@ mod tests {
 
         // Ensure internal min pointer updated
         assert_eq!(heap.min, new_h2);
+    }
+
+    #[test]
+    fn test_drain_partial_consumption() {
+        // Unlike PieList::Drain, FibHeap::Drain does NOT exhaust on drop.
+        let mut heap = FibHeap::new();
+        heap.push(10, "ten");
+        heap.push(5, "five");
+        heap.push(20, "twenty");
+        heap.push(1, "one");
+
+        {
+            let mut drain = heap.drain();
+            // Take only the first two (smallest)
+            assert_eq!(drain.next(), Some((1, "one")));
+            assert_eq!(drain.next(), Some((5, "five")));
+            // Drop without consuming the rest
+        }
+
+        // Heap should still contain the remaining elements
+        assert_eq!(heap.len(), 2);
+        assert_eq!(heap.pop(), Some((10, "ten")));
+        assert_eq!(heap.pop(), Some((20, "twenty")));
+        assert!(heap.is_empty());
     }
 }

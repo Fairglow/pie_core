@@ -44,6 +44,7 @@ use crate::{ElemPool, Index, IndexError, PieList};
 /// list.clear(&mut pool);
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct CursorMut<'a, T> {
     /// A mutable reference to the list being manipulated.
     pub(crate) list: &'a mut PieList<T>,

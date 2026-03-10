@@ -140,6 +140,7 @@ impl fmt::Display for IndexError {
 ///
 /// Its public API is minimal, as most interactions are performed through `PieList`,
 /// `CursorMut`, or `FibHeap` methods, which take the pool as an argument.
+#[must_use]
 pub struct ElemPool<T> {
     /// Elements containing metadata (links + generation/state) and user data.
     elems: Vec<Elem<T>>,
@@ -212,7 +213,9 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for ElemPool<T> {
                 let used: usize = seq.next_element()?
                     .ok_or_else(|| de::Error::invalid_length(2, &self))?;
 
-                Ok(ElemPool { elems, freed, used })
+                let pool = ElemPool { elems, freed, used };
+                pool.validate_integrity().map_err(de::Error::custom)?;
+                Ok(pool)
             }
 
             fn visit_map<V>(self, mut map: V) -> Result<ElemPool<T>, V::Error>
@@ -250,7 +253,9 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for ElemPool<T> {
                 let freed = freed.ok_or_else(|| de::Error::missing_field("freed"))?;
                 let used = used.ok_or_else(|| de::Error::missing_field("used"))?;
 
-                Ok(ElemPool { elems, freed, used })
+                let pool = ElemPool { elems, freed, used };
+                pool.validate_integrity().map_err(de::Error::custom)?;
+                Ok(pool)
             }
         }
 
@@ -346,6 +351,101 @@ impl<T> ElemPool<T> {
     #[inline]
     pub fn reserve(&mut self, additional: usize) {
         self.elems.reserve(additional);
+    }
+
+    /// Validates the structural integrity of the pool after deserialization.
+    ///
+    /// Checks the following invariants:
+    /// 1. The pool is non-empty (slot 0 must exist and be a sentinel).
+    /// 2. All next/prev links are bidirectional (if A.next == B then B.prev == A).
+    /// 3. All links point to valid slots (within bounds).
+    /// 4. The `freed` count matches the actual number of free-list elements.
+    /// 5. The `used` count matches the actual number of USED elements.
+    /// 6. No elements are in the ZOMBIE state (which is transient).
+    ///
+    /// Returns `Ok(())` if all checks pass, or an error string describing the
+    /// first failure.
+    pub fn validate_integrity(&self) -> Result<(), alloc::string::String> {
+        use alloc::format;
+
+        let len = self.elems.len();
+
+        // 1. Must have at least the free-list sentinel at slot 0
+        if len == 0 {
+            return Err("pool is empty (missing free-list sentinel at slot 0)".into());
+        }
+        if !self.elems[0].is_sentinel() {
+            return Err(format!(
+                "slot 0 must be a sentinel, found state {:?}",
+                self.elems[0].state()
+            ));
+        }
+
+        let mut actual_used = 0usize;
+        let mut actual_free = 0usize;
+
+        for (i, elem) in self.elems.iter().enumerate() {
+            // 6. No zombies should survive serialization
+            if elem.is_zombie() {
+                return Err(format!("slot {i} is in ZOMBIE state (transient state should not be serialized)"));
+            }
+
+            // 3. All links must be in bounds
+            let (prev, next) = elem.links();
+            let Some(next_idx) = next.get() else {
+                return Err(format!("slot {i} has NONE next link"));
+            };
+            let Some(prev_idx) = prev.get() else {
+                return Err(format!("slot {i} has NONE prev link"));
+            };
+            if next_idx >= len {
+                return Err(format!("slot {i} next link ({next_idx}) is out of bounds (len={len})"));
+            }
+            if prev_idx >= len {
+                return Err(format!("slot {i} prev link ({prev_idx}) is out of bounds (len={len})"));
+            }
+
+            // 2. Bidirectional link check
+            let next_elem = &self.elems[next_idx];
+            if next_elem.prev.get() != Some(i) {
+                return Err(format!(
+                    "slot {i} -> next={next_idx}, but slot {next_idx}.prev={:?} (expected {i})",
+                    next_elem.prev.get()
+                ));
+            }
+            let prev_elem = &self.elems[prev_idx];
+            if prev_elem.next.get() != Some(i) {
+                return Err(format!(
+                    "slot {i} -> prev={prev_idx}, but slot {prev_idx}.next={:?} (expected {i})",
+                    prev_elem.next.get()
+                ));
+            }
+
+            // Count states
+            if elem.is_used() {
+                actual_used += 1;
+            } else if elem.is_free() {
+                actual_free += 1;
+            }
+        }
+
+        // 4. Freed count must match
+        if actual_free != self.freed {
+            return Err(format!(
+                "freed count mismatch: header says {}, actual free elements = {actual_free}",
+                self.freed
+            ));
+        }
+
+        // 5. Used count must match
+        if actual_used != self.used {
+            return Err(format!(
+                "used count mismatch: header says {}, actual used elements = {actual_used}",
+                self.used
+            ));
+        }
+
+        Ok(())
     }
 
     /// Checks if a given index points to an element that contains user data.
@@ -840,6 +940,7 @@ impl<T> ElemPool<T> {
     /// - A compact boolean array for tracking free slots in the tail region
     /// - Pre-sized collections to minimize allocations
     /// - A slot-indexed remapping array (instead of hash lookups) for O(1) neighbor resolution
+    #[must_use = "the remapping table must be used to update external handles"]
     pub fn shrink_to_fit(&mut self) -> IndexMap<Index<T>, Index<T>> {
         let old_len = self.elems.len();
         // The target length is simply total items minus the count of free items.

@@ -36,6 +36,7 @@ use crate::{ElemPool, Index, PieList};
 /// list.clear(&mut pool);
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct Cursor<'a, T> {
     pub(crate) list: &'a PieList<T>,
     /// The current element index. If this is `list.sentinel`, we are either

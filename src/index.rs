@@ -101,6 +101,7 @@ impl<T> PartialOrd for Index<T> {
 impl<T> Ord for Index<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.slot.cmp(&other.slot)
+            .then(self.vers.cmp(&other.vers))
     }
 }
 
@@ -240,5 +241,42 @@ mod tests {
         set.insert(index1);
         assert!(!set.insert(index1_dup));
         assert!(set.contains(&index1));
+    }
+
+    #[test]
+    fn test_from_usize_truncation() {
+        // Values that fit in u32 should work normally
+        let index = Index::<MyData>::from(42_usize);
+        assert_eq!(index.get(), Some(42));
+
+        // u32::MAX - 1 is the largest valid slot
+        let index = Index::<MyData>::from((u32::MAX - 1) as usize);
+        assert_eq!(index.get(), Some((u32::MAX - 1) as usize));
+
+        // Values > u32::MAX should map to NONE (u32::MAX sentinel)
+        #[cfg(target_pointer_width = "64")]
+        {
+            let index = Index::<MyData>::from(u32::MAX as usize + 1);
+            assert_eq!(index, Index::NONE);
+            assert_eq!(index.get(), None);
+        }
+    }
+
+    #[test]
+    fn test_ord_includes_vers() {
+        // Same slot, different vers: vers should be the tiebreaker
+        let a = Index::<MyData>::new(5, 1);
+        let b = Index::<MyData>::new(5, 2);
+        assert!(a < b, "same slot, lower vers should sort first");
+
+        // Different slot: slot is primary key
+        let c = Index::<MyData>::new(3, 100);
+        let d = Index::<MyData>::new(7, 0);
+        assert!(c < d, "lower slot should sort first regardless of vers");
+
+        // Equal slot and vers
+        let e = Index::<MyData>::new(5, 5);
+        let f = Index::<MyData>::new(5, 5);
+        assert_eq!(e.cmp(&f), core::cmp::Ordering::Equal);
     }
 }

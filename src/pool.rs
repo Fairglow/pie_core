@@ -1460,4 +1460,39 @@ mod tests {
             list.clear(&mut pool);
         }
     }
+
+    #[test]
+    fn test_reserve() {
+        let mut pool = ElemPool::<i32>::new();
+
+        // Reserve preallocates Vec capacity so future pushes don't reallocate.
+        pool.reserve(100);
+
+        // Pool is still functionally correct after reserve — add 100 elements
+        // without any intermediate reallocation.
+        let mut list = PieList::new(&mut pool);
+        for v in 0..100 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, (0..100).collect::<Vec<_>>());
+        assert_eq!(pool.len(), 100);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_validate_integrity_good_pool() {
+        let mut pool = ElemPool::<i32>::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..20 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        // Delete some to create free-list entries.
+        for _ in 0..5 {
+            list.pop_front(&mut pool);
+        }
+        assert!(pool.validate_integrity().is_ok());
+        list.clear(&mut pool);
+        assert!(pool.validate_integrity().is_ok());
+    }
 }

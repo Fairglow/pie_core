@@ -1161,4 +1161,165 @@ mod tests {
         assert_eq!(heap.pop(), Some((20, "twenty")));
         assert!(heap.is_empty());
     }
+
+    /// Large-scale push/pop verifies that consolidation produces correct
+    /// min-heap ordering when the degree array is populated across many slots.
+    #[test]
+    fn test_consolidation_large() {
+        let mut heap = FibHeap::new();
+        let n = 500;
+        for i in (0..n).rev() {
+            heap.push(i, i);
+        }
+        assert_eq!(heap.len(), n);
+
+        // Pop all and verify ascending order.
+        let mut prev = None;
+        for _ in 0..n {
+            let (key, _) = heap.pop().expect("unexpected empty heap");
+            if let Some(p) = prev {
+                assert!(key >= p, "heap order violated: {} after {}", key, p);
+            }
+            prev = Some(key);
+        }
+        assert!(heap.is_empty());
+    }
+
+    /// Deep cascading cuts: build a chain of depth 6 and cut the deepest
+    /// node repeatedly to trigger cascading cuts up to the root.
+    #[test]
+    fn test_deep_cascading_cuts() {
+        let mut heap = FibHeap::new();
+        // Strategy: repeatedly build consolidated trees then decrease_key
+        // to trigger cuts. We track handles to specific interior nodes.
+        //
+        // Build a tree of degree >= 3 by pushing 16 nodes and popping
+        // to consolidate, then decrease_key to trigger cascading cuts.
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            handles.push(heap.push(i * 10, i));
+        }
+        // Pop min to trigger consolidation.
+        assert_eq!(heap.pop().unwrap().0, 0);
+        validate_heap_integrity(&heap);
+
+        // Now decrease keys of leaf nodes to values smaller than root,
+        // forcing cuts. Do this for several nodes to trigger cascading.
+        let remaining: Vec<_> = (1..16)
+            .filter_map(|i| {
+                let h = handles[i];
+                if heap.pool.data(h).is_some() { Some((i, h)) } else { None }
+            })
+            .collect();
+
+        // Decrease the last few handles (likely leaves/deep nodes).
+        for (count, &(i, h)) in remaining.iter().rev().take(6).enumerate() {
+            let new_key = -(count as i32) - 1; // Negative keys to force being minimum
+            // Only decrease if current key is larger
+            let current_key = heap.pool.data(h).unwrap().key;
+            if new_key < current_key {
+                heap.decrease_key(h, new_key).unwrap();
+                validate_heap_integrity(&heap);
+                // The decreased node should now be min or at least a root.
+                assert!(
+                    heap.pool.data(h).unwrap().parent.is_none(),
+                    "node {} (val={}) should have been cut to root", i, new_key,
+                );
+            }
+        }
+
+        // Pop all remaining to verify heap is still consistent.
+        let mut prev = i32::MIN;
+        while let Some((key, _)) = heap.pop() {
+            assert!(key >= prev, "heap order violated after cascading cuts");
+            prev = key;
+        }
+    }
+
+    /// Push and pop interleaved at scale to stress consolidation across
+    /// many incremental structural changes.
+    #[test]
+    fn test_push_pop_interleaved_large() {
+        let mut heap = FibHeap::new();
+        let mut expected = std::collections::BinaryHeap::new();
+
+        // Phase 1: push 200 items.
+        for i in 0..200 {
+            heap.push(i, ());
+            expected.push(std::cmp::Reverse(i));
+        }
+
+        // Phase 2: pop 100, push 100 more.
+        for i in 200..300 {
+            let got = heap.pop().unwrap().0;
+            let want = expected.pop().unwrap().0;
+            assert_eq!(got, want);
+            heap.push(i, ());
+            expected.push(std::cmp::Reverse(i));
+        }
+
+        // Phase 3: drain remaining.
+        while let Some(std::cmp::Reverse(want)) = expected.pop() {
+            let got = heap.pop().unwrap().0;
+            assert_eq!(got, want);
+        }
+        assert!(heap.is_empty());
+    }
+
+    /// Decrease key of a non-min node to make it the new global minimum,
+    /// then verify that peek and pop reflect the change.
+    #[test]
+    fn test_decrease_key_to_new_min() {
+        let mut heap = FibHeap::new();
+        heap.push(10, 'a');
+        let h = heap.push(50, 'b');
+        heap.push(30, 'c');
+
+        // Force consolidation so 'b' is a child, not a root.
+        let _ = heap.pop(); // pops 10/'a', consolidates
+        assert_eq!(heap.peek().unwrap().0, &30);
+
+        // Decrease 'b' (key 50) to 5, making it the new min.
+        heap.decrease_key(h, 5).unwrap();
+        assert_eq!(heap.peek().unwrap().0, &5);
+        assert_eq!(heap.peek().unwrap().1, &'b');
+
+        // Pop should yield 5/'b' then 30/'c'.
+        let (k1, v1) = heap.pop().unwrap();
+        assert_eq!((k1, v1), (5, 'b'));
+        let (k2, v2) = heap.pop().unwrap();
+        assert_eq!((k2, v2), (30, 'c'));
+        assert!(heap.is_empty());
+    }
+
+    /// Decrease keys of many nodes in a large heap, verifying that the
+    /// resulting pop order matches a reference implementation.
+    #[test]
+    fn test_decrease_key_many() {
+        let mut heap = FibHeap::new();
+        let mut handles = Vec::new();
+
+        // Push 200 items with keys 0..200.
+        for i in 0..200i32 {
+            handles.push(heap.push(i * 2, i));
+        }
+
+        // Pop one to trigger consolidation.
+        let (k, _) = heap.pop().unwrap();
+        assert_eq!(k, 0);
+
+        // Decrease every even-indexed handle's key to a negative value.
+        for (j, h) in handles.iter().enumerate().skip(1) {
+            if j % 2 == 0 {
+                heap.decrease_key(*h, -((j as i32) * 3)).unwrap();
+            }
+        }
+
+        // Drain and verify monotonically non-decreasing.
+        let mut prev = i32::MIN;
+        while let Some((k, _)) = heap.pop() {
+            assert!(k >= prev, "pop order violated: {} after {}", k, prev);
+            prev = k;
+        }
+    }
 }

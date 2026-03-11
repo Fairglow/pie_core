@@ -470,17 +470,18 @@ impl<T> PieList<T> {
 
         // Pre-allocate sentinel nodes for the stack slots we'll need.
         // For a list of length n, we need at most ceil(log2(n)) + 1 sentinels.
-        // Use a fixed-size array to avoid heap allocation.
+        // Use a fixed-size array as a LIFO stack to avoid heap allocation.
+        // Sentinels are popped when creating new runs and pushed back when
+        // merges make them redundant, so the pool never exceeds its initial size.
         let needed_sentinels = (usize::BITS - self.len().leading_zeros()) as usize;
-        let mut temp_sentinels = [Index::<T>::NONE; MAX_STACK_SIZE];
-        let mut sentinel_count: usize = 0;
+        let mut sentinel_pool = [Index::<T>::NONE; MAX_STACK_SIZE];
+        let mut pool_top: usize = 0;
         for _ in 0..needed_sentinels {
             let sentinel = pool.index_new().expect("Pool failed to allocate temp sentinel");
             let sentinel = pool.index_make_sentinel(sentinel).expect("Failed to make sentinel");
-            temp_sentinels[sentinel_count] = sentinel;
-            sentinel_count += 1;
+            sentinel_pool[pool_top] = sentinel;
+            pool_top += 1;
         }
-        let mut next_sentinel_idx = 0;
 
         // Process each element as a run of size 1.
         while !self.is_empty() {
@@ -490,11 +491,10 @@ impl<T> PieList<T> {
             pool.index_linkout(front_node).unwrap();
             self.len -= 1;
 
-            // Get or reuse a sentinel for this new run.
-            let run_sentinel = if next_sentinel_idx < sentinel_count {
-                let s = temp_sentinels[next_sentinel_idx];
-                next_sentinel_idx += 1;
-                s
+            // Pop a sentinel from the reuse pool for this new run.
+            let run_sentinel = if pool_top > 0 {
+                pool_top -= 1;
+                sentinel_pool[pool_top]
             } else {
                 // Fallback: allocate a new sentinel if we somehow need more.
                 let s = pool.index_new().expect("Pool failed to allocate sentinel");
@@ -524,15 +524,15 @@ impl<T> PieList<T> {
                     }
                     Some(mut existing) => {
                         // Merge the later run into the earlier existing run for stability.
-                        // Return the current run's sentinel to the reuse pool.
+                        // Push the current run's sentinel back to the reuse pool.
                         let old_sentinel = run.sentinel;
                         existing.merge(run, pool, &mut compare);
                         run = existing;
-                        // Mark the old sentinel as reusable by resetting it.
+                        // Reset the old sentinel's links and return it to the pool.
                         let old_slot = Slot::new(old_sentinel.slot);
                         let _ = pool.get_elem_mut(old_sentinel).map(|e| e.set_links(old_slot, old_slot));
-                        temp_sentinels[sentinel_count] = old_sentinel;
-                        sentinel_count += 1;
+                        sentinel_pool[pool_top] = old_sentinel;
+                        pool_top += 1;
                         slot += 1;
                     }
                 }
@@ -551,7 +551,13 @@ impl<T> PieList<T> {
                     Some(mut existing) => {
                         // `existing` (from higher slots) contains earlier elements,
                         // `run` (from lower slots) contains later elements.
+                        let old_sentinel = run.sentinel;
                         existing.merge(run, pool, &mut compare);
+                        // Push the consumed run's sentinel back to the pool.
+                        let old_slot = Slot::new(old_sentinel.slot);
+                        let _ = pool.get_elem_mut(old_sentinel).map(|e| e.set_links(old_slot, old_slot));
+                        sentinel_pool[pool_top] = old_sentinel;
+                        pool_top += 1;
                         result = Some(existing);
                     }
                 }
@@ -572,12 +578,12 @@ impl<T> PieList<T> {
             let _ = pool.index_del(old_sentinel);
         }
 
-        // Clean up any remaining temporary sentinels.
-        for sentinel in temp_sentinels.into_iter().take(sentinel_count) {
-            // Only delete if not currently in use (i.e., not self.sentinel).
-            if sentinel != self.sentinel {
-                let _ = pool.data_swap(sentinel, None);
-                let _ = pool.index_del(sentinel);
+        // Clean up all temporary sentinels remaining in the pool.
+        // The only sentinel NOT in the pool is the one now used by self.sentinel.
+        for sentinel in sentinel_pool.iter().take(pool_top) {
+            if *sentinel != self.sentinel {
+                let _ = pool.data_swap(*sentinel, None);
+                let _ = pool.index_del(*sentinel);
             }
         }
 
@@ -1384,5 +1390,228 @@ mod tests {
         assert_eq!(sorted, vec![42; 8]);
         assert_eq!(list.len(), 8);
         list.clear(&mut pool);
+    }
+
+    /// Sorting 100+ elements exercises cascade merges that exceed the
+    /// pre-allocated sentinel count. This is the size that triggered the
+    /// original index-out-of-bounds panic.
+    #[test]
+    fn test_sort_large_list() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        let mut values: Vec<i32> = (0..200).rev().collect();
+        for &v in &values {
+            list.push_back(v, &mut pool).unwrap();
+        }
+
+        list.sort(&mut pool, |a, b| a.cmp(b));
+
+        values.sort();
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, values);
+        assert_eq!(list.len(), 200);
+        list.clear(&mut pool);
+    }
+
+    /// Verifies that sort does not leak pool slots (sentinels or data).
+    /// After sorting and clearing, the pool should have exactly the same
+    /// number of live elements as before.
+    #[test]
+    fn test_sort_no_pool_leak() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        for v in 0..150 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+
+        // One sentinel for `list` + 150 data elements = list_count 1, used 150.
+        let lists_before = pool.list_count();
+        let used_before = pool.len();
+        assert_eq!(lists_before, 1);
+        assert_eq!(used_before, 150);
+
+        list.sort(&mut pool, |a: &i32, b| b.cmp(a));
+
+        // After sort: still one list, still 150 data elements, no leaked sentinels.
+        assert_eq!(pool.list_count(), 1, "sentinel leak: extra lists remain after sort");
+        assert_eq!(pool.len(), 150, "data element count changed after sort");
+
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, (0..150).rev().collect::<Vec<_>>());
+
+        list.clear(&mut pool);
+        assert_eq!(pool.len(), 0);
+        // list_count is 1 because the list's own sentinel is still alive
+        // (the PieList variable hasn't been dropped yet).
+        assert_eq!(pool.list_count(), 1);
+    }
+
+    /// Sorting a large list with all-equal keys stresses the stable merge
+    /// path (no element is ever "less than" another) while exercising the
+    /// full cascade depth.
+    #[test]
+    fn test_sort_large_all_equal() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        for _ in 0..128 {
+            list.push_back(7, &mut pool).unwrap();
+        }
+
+        list.sort(&mut pool, |a: &i32, b| a.cmp(b));
+
+        let sorted: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(sorted, vec![7; 128]);
+        assert_eq!(list.len(), 128);
+        assert_eq!(pool.list_count(), 1, "sentinel leak after equal-key sort");
+        list.clear(&mut pool);
+    }
+
+    /// Clearing a large list must return all data slots to the free list
+    /// without leaking sentinels or corrupting pool bookkeeping.
+    #[test]
+    fn test_clear_large_list() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        for i in 0..500 {
+            list.push_back(i, &mut pool).unwrap();
+        }
+        assert_eq!(pool.len(), 500);
+        assert_eq!(pool.list_count(), 1);
+
+        list.clear(&mut pool);
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.free_len(), 500);
+        assert_eq!(pool.list_count(), 1); // sentinel still alive
+
+        // Reuse: push again to verify the free list is intact.
+        for i in 0..500 {
+            list.push_back(i, &mut pool).unwrap();
+        }
+        let collected: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(collected, (0..500).collect::<Vec<_>>());
+        list.clear(&mut pool);
+    }
+
+    /// Sorting two lists that share a pool must not corrupt either list
+    /// or leak sentinels. This exercises the sentinel allocator under
+    /// contention from a fragmented pool.
+    #[test]
+    fn test_sort_concurrent_lists_shared_pool() {
+        let mut pool = ElemPool::new();
+        let mut list_a = PieList::new(&mut pool);
+        let mut list_b = PieList::new(&mut pool);
+
+        for i in (0..100).rev() {
+            list_a.push_back(i, &mut pool).unwrap();
+        }
+        for i in (0..80).rev() {
+            list_b.push_back(i * 3, &mut pool).unwrap();
+        }
+        assert_eq!(pool.list_count(), 2);
+        assert_eq!(pool.len(), 180);
+
+        list_a.sort(&mut pool, |a, b| a.cmp(b));
+        assert_eq!(pool.list_count(), 2, "sentinel leak after sorting list_a");
+        assert_eq!(pool.len(), 180);
+
+        list_b.sort(&mut pool, |a, b| a.cmp(b));
+        assert_eq!(pool.list_count(), 2, "sentinel leak after sorting list_b");
+        assert_eq!(pool.len(), 180);
+
+        let a_sorted: Vec<_> = list_a.iter(&pool).copied().collect();
+        let b_sorted: Vec<_> = list_b.iter(&pool).copied().collect();
+        assert_eq!(a_sorted, (0..100).collect::<Vec<_>>());
+        let mut expected_b: Vec<i32> = (0..80).map(|i| i * 3).collect();
+        expected_b.sort();
+        assert_eq!(b_sorted, expected_b);
+
+        list_a.clear(&mut pool);
+        list_b.clear(&mut pool);
+    }
+
+    /// Repeated sort on the same list should not accumulate leaked sentinels.
+    #[test]
+    fn test_sort_repeated_no_leak() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+
+        for v in (0..64).rev() {
+            list.push_back(v, &mut pool).unwrap();
+        }
+
+        for _ in 0..10 {
+            list.sort(&mut pool, |a: &i32, b| a.cmp(b));
+            assert_eq!(pool.list_count(), 1, "sentinel leak on repeated sort");
+            assert_eq!(pool.len(), 64);
+            // Reverse to make the next sort do real work.
+            list.sort(&mut pool, |a: &i32, b| b.cmp(a));
+            assert_eq!(pool.list_count(), 1);
+        }
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_append() {
+        let mut pool = ElemPool::new();
+        let mut a = PieList::new(&mut pool);
+        let mut b = PieList::new(&mut pool);
+
+        for v in 0..5 {
+            a.push_back(v, &mut pool).unwrap();
+        }
+        for v in 5..10 {
+            b.push_back(v, &mut pool).unwrap();
+        }
+
+        a.append(&mut b, &mut pool).unwrap();
+        assert_eq!(a.len(), 10);
+        assert!(b.is_empty());
+        let items: Vec<_> = a.iter(&pool).copied().collect();
+        assert_eq!(items, (0..10).collect::<Vec<_>>());
+
+        // Append empty list is a no-op.
+        a.append(&mut b, &mut pool).unwrap();
+        assert_eq!(a.len(), 10);
+
+        // Append to empty list moves all elements.
+        let mut c = PieList::new(&mut pool);
+        c.append(&mut a, &mut pool).unwrap();
+        assert_eq!(c.len(), 10);
+        assert!(a.is_empty());
+
+        a.clear(&mut pool);
+        b.clear(&mut pool);
+        c.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_prepend() {
+        let mut pool = ElemPool::new();
+        let mut a = PieList::new(&mut pool);
+        let mut b = PieList::new(&mut pool);
+
+        for v in 5..10 {
+            a.push_back(v, &mut pool).unwrap();
+        }
+        for v in 0..5 {
+            b.push_back(v, &mut pool).unwrap();
+        }
+
+        a.prepend(&mut b, &mut pool).unwrap();
+        assert_eq!(a.len(), 10);
+        assert!(b.is_empty());
+        let items: Vec<_> = a.iter(&pool).copied().collect();
+        assert_eq!(items, (0..10).collect::<Vec<_>>());
+
+        // Prepend empty list is a no-op.
+        a.prepend(&mut b, &mut pool).unwrap();
+        assert_eq!(a.len(), 10);
+
+        a.clear(&mut pool);
+        b.clear(&mut pool);
     }
 }

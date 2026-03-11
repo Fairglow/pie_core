@@ -585,4 +585,159 @@ mod tests {
         assert!(matches!(list.cursor_mut_at(1, &mut pool), Err(IndexError::IndexOutOfBounds)));
         list.clear(&mut pool);
     }
+
+    /// Split and splice at larger scale, verifying pool consistency.
+    /// This catches sentinel or link corruption that only shows up when
+    /// multiple splits/splices interact with the same pool.
+    #[test]
+    fn test_split_splice_large() {
+        let mut pool = ElemPool::new();
+        let n = 100;
+        let mut list = list_with_items(&mut pool, &(0..n).collect::<Vec<_>>());
+        assert_eq!(pool.list_count(), 1);
+        assert_eq!(pool.len(), n as usize);
+
+        // Split at the midpoint.
+        let mut back_half;
+        {
+            let mut cursor = list.cursor_mut_at(50, &mut pool).unwrap();
+            back_half = cursor.split_before(&mut pool).unwrap();
+        }
+        // list = [50..100), back_half = [0..50)
+        assert_eq!(list.len(), 50);
+        assert_eq!(back_half.len(), 50);
+        assert_eq!(pool.list_count(), 2);
+        assert_eq!(pool.len(), n as usize);
+
+        let list_vec: Vec<_> = list.iter(&pool).copied().collect();
+        let back_vec: Vec<_> = back_half.iter(&pool).copied().collect();
+        assert_eq!(list_vec, (50..100).collect::<Vec<_>>());
+        assert_eq!(back_vec, (0..50).collect::<Vec<_>>());
+
+        // Splice back_half into the middle of list (before index 25, which is element 75).
+        {
+            let mut cursor = list.cursor_mut_at(25, &mut pool).unwrap();
+            cursor.splice_before(&mut back_half, &mut pool).unwrap();
+        }
+        assert!(back_half.is_empty());
+        assert_eq!(list.len(), n as usize);
+        assert_eq!(pool.list_count(), 2); // back_half sentinel still alive
+        assert_eq!(pool.len(), n as usize);
+
+        // Verify: [50..75, 0..50, 75..100]
+        let result: Vec<_> = list.iter(&pool).copied().collect();
+        let mut expected: Vec<i32> = (50..75).collect();
+        expected.extend(0..50);
+        expected.extend(75..100);
+        assert_eq!(result, expected);
+
+        list.clear(&mut pool);
+        back_half.clear(&mut pool);
+    }
+
+    /// Repeated split/splice cycles must not leak pool resources.
+    #[test]
+    fn test_split_splice_repeated_no_leak() {
+        let mut pool = ElemPool::new();
+        let mut list = list_with_items(&mut pool, &(0..40).collect::<Vec<_>>());
+
+        for _ in 0..20 {
+            let mut tail;
+            {
+                let mut cursor = list.cursor_mut_at(20, &mut pool).unwrap();
+                tail = cursor.split_before(&mut pool).unwrap();
+            }
+            assert_eq!(list.len(), 20);
+            assert_eq!(tail.len(), 20);
+
+            // Splice back at front.
+            {
+                let mut cursor = list.cursor_mut(&mut pool);
+                cursor.move_to_front(&pool);
+                cursor.splice_before(&mut tail, &mut pool).unwrap();
+            }
+            assert_eq!(list.len(), 40);
+            assert!(tail.is_empty());
+            tail.clear(&mut pool);
+        }
+
+        assert_eq!(pool.len(), 40);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_insert_after() {
+        let mut pool = ElemPool::new();
+        let mut list = list_with_items(&mut pool, &[10, 30]);
+
+        // Insert after first element.
+        {
+            let mut cursor = list.cursor_mut(&mut pool);
+            // cursor starts at index 0 (value 10)
+            cursor.insert_after(20, &mut pool).unwrap();
+            assert_eq!(cursor.index(), Some(0));
+            assert_eq!(*cursor.peek(&pool).unwrap(), 10);
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![10, 20, 30]);
+
+        // Insert after last element.
+        {
+            let mut cursor = list.cursor_mut(&mut pool);
+            cursor.move_to_back(&pool);
+            cursor.insert_after(40, &mut pool).unwrap();
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![10, 20, 30, 40]);
+
+        // Insert after "Before Start" -> prepend.
+        {
+            let mut cursor = list.cursor_mut(&mut pool);
+            // move_prev from front to Before Start
+            cursor.move_prev(&pool);
+            assert_eq!(cursor.index(), None);
+            cursor.insert_after(5, &mut pool).unwrap();
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![5, 10, 20, 30, 40]);
+
+        assert_eq!(list.len(), 5);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_remove_current_edges() {
+        let mut pool = ElemPool::new();
+        let mut list = list_with_items(&mut pool, &[10, 20, 30]);
+
+        // Remove from Before Start returns None.
+        {
+            let mut cursor = list.cursor_mut(&mut pool);
+            cursor.move_prev(&pool); // Before Start
+            assert_eq!(cursor.remove_current(&mut pool), None);
+        }
+        assert_eq!(list.len(), 3);
+
+        // Remove last element; cursor moves to After End.
+        {
+            let mut cursor = list.cursor_mut_at(2, &mut pool).unwrap();
+            assert_eq!(*cursor.peek(&pool).unwrap(), 30);
+            let removed = cursor.remove_current(&mut pool);
+            assert_eq!(removed, Some(30));
+            assert_eq!(cursor.index(), None); // After End
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![10, 20]);
+
+        // Remove first element; cursor moves to next.
+        {
+            let mut cursor = list.cursor_mut(&mut pool);
+            let removed = cursor.remove_current(&mut pool);
+            assert_eq!(removed, Some(10));
+            assert_eq!(cursor.index(), Some(0));
+            assert_eq!(*cursor.peek(&pool).unwrap(), 20);
+        }
+        assert_eq!(list.len(), 1);
+        list.clear(&mut pool);
+    }
 }

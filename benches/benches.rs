@@ -36,7 +36,7 @@ use priority_queue::PriorityQueue;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::RngExt;
 
 // ============================================================================
 // Configuration
@@ -1059,7 +1059,6 @@ mod dijkstra_bench {
     use petgraph::graph::Graph;
     use petgraph::algo::dijkstra;
     use pie_core::dijkstra_pie_core;
-    use rand::Rng;
 
     /// Creates a dense graph with `node_count` nodes and `edge_count` random edges.
     fn create_dense_graph(node_count: usize, edge_count: usize) -> Graph<&'static str, u64> {

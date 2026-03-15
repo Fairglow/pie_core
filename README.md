@@ -2,7 +2,7 @@
 
 [![Rust](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml/badge.svg)](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml)
 
-`pie_core` is a Rust crate that provides high-performance, arena-allocated data structure implementations, including a doubly-linked list and a Fibonacci heap (priority queue). It is built on an arena allocation (or "pool") model, which offers significant performance benefits over traditional node-based structures in specific scenarios.
+`pie_core` is a Rust crate that provides high-performance, arena-allocated data structure implementations, including a doubly-linked list and a Fibonacci heap (priority queue). The name "pie" stands for **p**ayload **i**n **e**lement — a core design choice where user data is stored directly inside each arena node alongside the link pointers, maximizing cache locality. It is built on an arena allocation (or "pool") model, which offers significant performance benefits over traditional node-based structures in specific scenarios.
 
 This crate provides three main types:
 
@@ -150,26 +150,26 @@ See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology and results.
 
 `pie_core` is specialized. For many use cases, a standard library collection may be a better or simpler choice:
 
-- **`std::collections::Vec`**: The default and usually best choice for a sequence of data.
-- **`std::collections::VecDeque`**: Excellent for fast push/pop operations at both ends (queue-like data structures).
-- **`std::collections::LinkedList`**: A general-purpose doubly-linked list. It's simpler to use if you don't need the performance characteristics of an arena and are okay with per-node heap allocations.
-- **`std::collections::BinaryHeap`**: A simpler, cache-friendlier priority queue. Use it if you only need `push` and `pop` and do not require the efficient `decrease_key` operation provided by `FibHeap`.
-- **`indextree` / `slotmap`**: Other crates that explore arena allocation, generational indices, and graph-like data structures.
+- **[`Vec`](https://doc.rust-lang.org/std/vec/struct.Vec.html)**: The default and usually best choice for a sequence of data.
+- **[`VecDeque`](https://doc.rust-lang.org/std/collections/struct.VecDeque.html)**: Excellent for fast push/pop operations at both ends (queue-like data structures).
+- **[`LinkedList`](https://doc.rust-lang.org/std/collections/struct.LinkedList.html)**: A general-purpose doubly-linked list. It's simpler to use if you don't need the performance characteristics of an arena and are okay with per-node heap allocations.
+- **[`BinaryHeap`](https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html)**: A simpler, cache-friendlier priority queue. Use it if you only need `push` and `pop` and do not require the efficient `decrease_key` operation provided by `FibHeap`.
+- **[`indextree`](https://crates.io/crates/indextree) / [`slotmap`](https://crates.io/crates/slotmap)**: Other crates that explore arena allocation, generational indices, and graph-like data structures.
 
 ## Project Structure
 
 This repository contains more than just the library code. Here is a breakdown of the key components:
 
-- **`src/`**: Core library code for `ElemPool`, `PieList`, `FibHeap`, and related components.
-- **`benches/`**: Criterion benchmarks for performance testing against other popular crates.
-- **`examples/`**:
-  - `fibonacci_heap.rs`: A simple example of using `FibHeap`.
-  - `text_editor.rs`: A more complex example demonstrating a text editor backend using `PieList`.
-  - `dijkstra/`: A complete example of Dijkstra's pathfinding algorithm using `FibHeap` with `petgraph`.
-- **`tests/`**: Integration tests, including tests for `serde` and `pathfinding`.
-- **`tools/bench-table`**: A small utility to format benchmark results into a markdown table.
-- **`.github/workflows/rust.yml`**: Continuous integration setup to run tests and checks on every push.
-- **`justfile`**: A convenient way to run common commands like `just test` or `just bench`.
+- **[`src/`](src/)**: Core library code for `ElemPool`, `PieList`, `FibHeap`, and related components.
+- **[`benches/`](benches/)**: Criterion benchmarks for performance testing against other popular crates.
+- **[`examples/`](examples/)**:
+  - [`fibonacci_heap.rs`](examples/fibonacci_heap.rs): A simple example of using `FibHeap`.
+  - [`text_editor.rs`](examples/text_editor.rs): A more complex example demonstrating a text editor backend using `PieList`.
+  - [`dijkstra/`](examples/dijkstra/): A complete example of Dijkstra's pathfinding algorithm using `FibHeap` with `petgraph`.
+- **[`tests/`](tests/)**: Integration tests, including tests for `serde` and `pathfinding`.
+- **[`tools/bench-table`](tools/bench-table/)**: A small utility to format benchmark results into a markdown table.
+- **[`.github/workflows/rust.yml`](.github/workflows/rust.yml)**: Continuous integration setup to run tests and checks on every push.
+- **[`justfile`](justfile)**: A convenient way to run common commands like `just test` or `just bench`.
 
 ## **Disclosure of AI Collaboration**
 

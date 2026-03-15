@@ -331,6 +331,48 @@ impl<T> PieList<T> {
         data
     }
 
+    /// Retains only the elements for which the predicate returns `true`.
+    ///
+    /// Elements for which `f` returns `false` are removed from the list and
+    /// returned to the pool's free list.
+    ///
+    /// # Complexity
+    /// O(n), where n is the number of elements in the list.
+    ///
+    /// # Example
+    /// ```
+    /// # use pie_core::{ElemPool, PieList};
+    /// # let mut pool = ElemPool::<i32>::new();
+    /// let mut list = PieList::new(&mut pool);
+    /// for v in 0..10 {
+    ///     list.push_back(v, &mut pool).unwrap();
+    /// }
+    /// list.retain(&mut pool, |x| x % 2 == 0);
+    /// let items: Vec<_> = list.iter(&pool).copied().collect();
+    /// assert_eq!(items, vec![0, 2, 4, 6, 8]);
+    /// # list.clear(&mut pool);
+    /// ```
+    pub fn retain<F>(&mut self, pool: &mut ElemPool<T>, mut f: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        let sentinel_slot = self.sentinel.slot as usize;
+        let mut current_slot = pool.next_slot(sentinel_slot).unwrap();
+        while current_slot != sentinel_slot {
+            let next_slot = pool.next_slot(current_slot).unwrap();
+            let keep = pool.data_at(current_slot)
+                .is_some_and(&mut f);
+            if !keep {
+                let idx = pool.index_from_slot(current_slot);
+                pool.index_linkout(idx).expect("retain: linkout of valid element failed");
+                self.len -= 1;
+                pool.data_swap(idx, None);
+                pool.index_del(idx).expect("retain: index_del of valid element failed");
+            }
+            current_slot = next_slot;
+        }
+    }
+
     /// Enable/disable the leak check for this list in debug builds
     ///
     /// NOTE: No leak check is performed in release builds
@@ -1613,5 +1655,56 @@ mod tests {
 
         a.clear(&mut pool);
         b.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_retain_keep_even() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..10 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        list.retain(&mut pool, |x| x % 2 == 0);
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![0, 2, 4, 6, 8]);
+        assert_eq!(list.len(), 5);
+        assert_eq!(pool.len(), 5);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_retain_remove_all() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..5 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        list.retain(&mut pool, |_| false);
+        assert!(list.is_empty());
+        assert_eq!(pool.len(), 0);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_retain_keep_all() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..5 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        list.retain(&mut pool, |_| true);
+        assert_eq!(list.len(), 5);
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![0, 1, 2, 3, 4]);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_retain_empty_list() {
+        let mut pool = ElemPool::<i32>::new();
+        let mut list = PieList::new(&mut pool);
+        list.retain(&mut pool, |_| true);
+        assert!(list.is_empty());
+        list.clear(&mut pool);
     }
 }

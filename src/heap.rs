@@ -63,7 +63,7 @@
 //!
 //! This maintains the Fibonacci heap property and ensures O(1) amortized cost.
 
-use crate::{ElemPool, Index, PieList};
+use crate::{ElemPool, Index, IndexError, PieList};
 use crate::IndexMap;
 use crate::slot::Slot;
 use core::{error, fmt, mem};
@@ -75,7 +75,15 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, PartialEq, Eq)]
 pub enum DecreaseKeyError {
     /// The provided handle was invalid (e.g., NONE, out of bounds, or pointed to a free node).
-    InvalidHandle,
+    ///
+    /// The `slot` and `generation` fields carry the values from the handle that
+    /// was rejected, which is useful for debugging stale or mismatched handles.
+    InvalidHandle {
+        /// Slot index from the rejected handle.
+        slot: u32,
+        /// Generation value from the rejected handle.
+        generation: u32,
+    },
     /// The new key is greater than current
     NewKeyGreaterThanCurrent,
 }
@@ -85,7 +93,10 @@ impl error::Error for DecreaseKeyError {}
 impl fmt::Display for DecreaseKeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidHandle => write!(f, "Invalid handle provided to decrease_key"),
+            Self::InvalidHandle { slot, generation } => write!(
+                f, "Invalid handle provided to decrease_key (slot={}, generation={})",
+                slot, generation
+            ),
             Self::NewKeyGreaterThanCurrent => write!(f, "Key greater than current provided"),
         }
     }
@@ -229,6 +240,32 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// Panics if the internal `ElemPool` fails to allocate a new node, which
     /// typically only happens in an out-of-memory situation.
     pub fn push(&mut self, key: K, value: V) -> FibHandle<K, V> {
+        self.try_push(key, value)
+            .expect("Failed to allocate node in FibHeap::push")
+    }
+
+    /// Pushes a new key-value pair onto the heap, returning an error on
+    /// allocation failure instead of panicking.
+    ///
+    /// This is the fallible counterpart of [`push`](Self::push).
+    ///
+    /// # Complexity
+    ///
+    /// O(1) amortized time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] if the internal pool cannot allocate a new node.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use pie_core::FibHeap;
+    /// let mut heap = FibHeap::new();
+    /// let handle = heap.try_push(10, "ten").unwrap();
+    /// assert_eq!(heap.peek(), Some((&10, &"ten")));
+    /// ```
+    pub fn try_push(&mut self, key: K, value: V) -> Result<FibHandle<K, V>, IndexError> {
         // Each node needs its *own* child list, which means
         // allocating a new sentinel for it.
         let children = PieList::new(&mut self.pool).without_leak_check();
@@ -240,17 +277,12 @@ impl<K: Ord, V> FibHeap<K, V> {
             degree: 0,
             marked: false,
         };
-        // `push_front` creates the `ListElem` in the pool,
-        // stores our `node` data inside it, and links it.
-        // We panic on OOM, which is standard for collections.
-        self.roots
-            .push_front(node, &mut self.pool)
-            .expect("Failed to allocate node");
+        self.roots.push_front(node, &mut self.pool)?;
         // `push_front` adds the node as the *first* element after the sentinel.
         let handle = self.pool.next(self.roots.sentinel);
         self.update_min(handle);
         self.len += 1;
-        handle
+        Ok(handle)
     }
 
     /// Helper to update the `min` pointer.
@@ -440,7 +472,10 @@ impl<K: Ord, V> FibHeap<K, V> {
     pub fn decrease_key(&mut self, handle: FibHandle<K, V>, new_key: K
     ) -> Result<(), DecreaseKeyError> {
         let parent = {
-            let node = self.pool.data(handle).ok_or(DecreaseKeyError::InvalidHandle)?;
+            let node = self.pool.data(handle).ok_or(DecreaseKeyError::InvalidHandle {
+                slot: handle.slot,
+                generation: handle.vers,
+            })?;
             if new_key > node.key {
                 return Err(DecreaseKeyError::NewKeyGreaterThanCurrent);
             }
@@ -1320,6 +1355,41 @@ mod tests {
         while let Some((k, _)) = heap.pop() {
             assert!(k >= prev, "pop order violated: {} after {}", k, prev);
             prev = k;
+        }
+    }
+
+    #[test]
+    fn test_try_push() {
+        let mut heap = FibHeap::new();
+        let handle = heap.try_push(10, "ten").unwrap();
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.peek(), Some((&10, &"ten")));
+        // Push more to ensure ordering still works.
+        heap.try_push(5, "five").unwrap();
+        heap.try_push(20, "twenty").unwrap();
+        assert_eq!(heap.peek(), Some((&5, &"five")));
+        assert_eq!(heap.len(), 3);
+        // Handle from try_push works with decrease_key.
+        heap.decrease_key(handle, 1).unwrap();
+        assert_eq!(heap.peek(), Some((&1, &"ten")));
+        heap.clear();
+    }
+
+    #[test]
+    fn test_decrease_key_invalid_handle_diagnostic() {
+        let mut heap = FibHeap::new();
+        heap.push(10, ());
+        // Pop to free the node, making the old handle stale.
+        let (_, _) = heap.pop().unwrap();
+        // Use a fabricated stale handle.
+        let stale = FibHandle::<i32, ()>::new(42, 99);
+        let err = heap.decrease_key(stale, 0);
+        match err {
+            Err(DecreaseKeyError::InvalidHandle { slot, generation }) => {
+                assert_eq!(slot, 42);
+                assert_eq!(generation, 99);
+            }
+            other => panic!("expected InvalidHandle, got {:?}", other),
         }
     }
 }

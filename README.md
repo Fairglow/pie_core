@@ -1,6 +1,6 @@
-[![Rust](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml/badge.svg)](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml)
-
 # **pie_core: High-Performance, Arena-Allocated Data Structures**
+
+[![Rust](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml/badge.svg)](https://github.com/Fairglow/pie_core/actions/workflows/rust.yml)
 
 `pie_core` is a Rust crate that provides high-performance, arena-allocated data structure implementations, including a doubly-linked list and a Fibonacci heap (priority queue). It is built on an arena allocation (or "pool") model, which offers significant performance benefits over traditional node-based structures in specific scenarios.
 
@@ -155,4 +155,4 @@ This project serves as an example of human-AI partnership, where the AI acts as 
 
 ## **AI Assessment**
 
-The result of this collaboration is a professional-grade, feature-complete library for its intended niche. It is efficient, idiomatic, and highly maintainable, with a correctness guarantee backed by a thorough test suite.
+The result of this collaboration is a well-crafted, feature-rich library for its intended niche. It is efficient, idiomatic, and maintainable, with correctness supported by a thorough test suite covering unit, integration, and stress tests. See [TODO.md](TODO.md) for known areas of improvement.

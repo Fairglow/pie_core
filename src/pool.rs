@@ -1509,7 +1509,7 @@ mod tests {
             list.push_back(v, &mut pool).unwrap();
         }
         // Don't clear list — reset handles cleanup.
-        list.without_leak_check();
+        let _ = list.without_leak_check();
         let old_cap = pool.elems.capacity();
         pool.reset();
         assert_eq!(pool.len(), 0);

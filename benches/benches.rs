@@ -1235,6 +1235,268 @@ fn bench_pool_shared_lists(c: &mut Criterion) {
 }
 
 // ============================================================================
+// List Benchmarks: Drain (consume all elements via draining iterator)
+// ============================================================================
+// Shows: Drain performance comparison. PieList::drain is O(n) with arena
+// bookkeeping per node. Vec::drain is contiguous memory, fastest possible.
+
+fn bench_list_drain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/drain");
+
+    for &size in SIZES {
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    let sum: u64 = list.drain(&mut pool).sum();
+                    black_box(sum)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_with_input(BenchmarkId::new("vec", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<Vec<_>>(),
+                |mut vec| {
+                    let sum: u64 = vec.drain(..).sum();
+                    black_box(sum)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_with_input(BenchmarkId::new("vecdeque", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<VecDeque<_>>(),
+                |mut deque| {
+                    let sum: u64 = deque.drain(..).sum();
+                    black_box(sum)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Heap Benchmarks: Drain (pop all elements in sorted order via drain iterator)
+// ============================================================================
+// Shows: Drain of a heap yields elements in sorted order via repeated pop.
+// FibHeap::drain uses pop() internally, so this benchmarks full extraction.
+
+fn bench_heap_drain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heap/drain");
+
+    let mut rng = StdRng::seed_from_u64(42);
+
+    for &size in SIZES {
+        let mut random_keys: Vec<usize> = (0..size).collect();
+        random_keys.shuffle(&mut rng);
+        let random_keys = random_keys;
+
+        group.bench_with_input(BenchmarkId::new("piefibheap", size), &size, |b, &_n| {
+            b.iter_batched(
+                || {
+                    let mut heap = PieFibHeap::new();
+                    for &key in &random_keys {
+                        heap.push(key, ());
+                    }
+                    heap
+                },
+                |mut heap| {
+                    let count: usize = heap.drain().count();
+                    black_box(count)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_with_input(BenchmarkId::new("binaryheap", size), &size, |b, &_n| {
+            b.iter_batched(
+                || {
+                    let mut heap = BinaryHeap::new();
+                    for &key in &random_keys {
+                        heap.push(Reverse(key));
+                    }
+                    heap
+                },
+                |mut heap| {
+                    // BinaryHeap::drain does NOT yield sorted order (it just empties).
+                    // For fair comparison, we drain into sorted via repeated pop.
+                    let mut count = 0usize;
+                    while heap.pop().is_some() {
+                        count += 1;
+                    }
+                    black_box(count)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Pool Benchmarks: shrink_to_fit (compact pool after deletions)
+// ============================================================================
+// Shows: Cost of compacting the pool after heavy use with many freed slots.
+// Deletes ~50% of elements, then measures the compaction time.
+
+fn bench_shrink_to_fit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pool/shrink_to_fit");
+
+    for &size in SIZES {
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    // Delete every other element via retain to create fragmentation
+                    list.retain(&mut pool, |x| *x % 2 == 0);
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    let remap = pool.shrink_to_fit();
+                    list.remap(&remap);
+                    black_box(pool.capacity())
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// List Benchmarks: Cursor Traversal (forward scan with peek)
+// ============================================================================
+// Shows: Cursor traversal performance. Cursor uses slot-based navigation
+// internally but requires peek() to access data, unlike iterators.
+
+fn bench_list_cursor_traverse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/cursor_traverse");
+
+    for &size in SIZES {
+        // Immutable cursor: move_next + peek
+        group.bench_with_input(BenchmarkId::new("pielist_cursor", size), &size, |b, &n| {
+            let mut pool = ElemPool::new();
+            let mut list = PieList::new(&mut pool);
+            for i in 0..n {
+                list.push_back(i as u64, &mut pool).unwrap();
+            }
+
+            b.iter(|| {
+                let mut cursor = list.cursor(&pool);
+                let mut sum = 0u64;
+                while let Some(&val) = cursor.peek(&pool) {
+                    sum += val;
+                    cursor.move_next(&pool);
+                }
+                black_box(sum)
+            })
+        });
+
+        // Mutable cursor: move_next + peek
+        group.bench_with_input(BenchmarkId::new("pielist_cursor_mut", size), &size, |b, &n| {
+            let mut pool = ElemPool::new();
+            let mut list = PieList::new(&mut pool);
+            for i in 0..n {
+                list.push_back(i as u64, &mut pool).unwrap();
+            }
+
+            b.iter(|| {
+                let mut cursor = list.cursor_mut(&mut pool);
+                let mut sum = 0u64;
+                while let Some(&val) = cursor.peek(&pool) {
+                    sum += val;
+                    cursor.move_next(&pool);
+                }
+                black_box(sum)
+            })
+        });
+
+        // Iterator baseline for comparison
+        group.bench_with_input(BenchmarkId::new("pielist_iter", size), &size, |b, &n| {
+            let mut pool = ElemPool::new();
+            let mut list = PieList::new(&mut pool);
+            for i in 0..n {
+                list.push_back(i as u64, &mut pool).unwrap();
+            }
+
+            b.iter(|| {
+                let sum: u64 = list.iter(&pool).sum();
+                black_box(sum)
+            })
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// List Benchmarks: split_before (split a list at the midpoint via cursor)
+// ============================================================================
+// Shows: O(n/2) seek + O(1) split for PieList. Vec::split_off is O(n/2) copy.
+// The split itself is O(1) for PieList but O(k) for Vec where k = elements moved.
+
+fn bench_list_split(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/split");
+
+    for &size in SIZES {
+        // PieList: cursor seek to mid + O(1) split
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    pool.reserve(n + 4);
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    let mut cursor = list.cursor_mut_at(n / 2, &mut pool).unwrap();
+                    let front = cursor.split_before(&mut pool).unwrap();
+                    black_box(front.len());
+                    // Cleanup: re-splice to avoid drop overhead in measurement
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+
+        // Vec: split_off at midpoint (copies trailing half)
+        group.bench_with_input(BenchmarkId::new("vec", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<Vec<_>>(),
+                |mut vec| {
+                    let back = vec.split_off(n / 2);
+                    black_box(back.len());
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
 // Benchmark Registration
 // ============================================================================
 
@@ -1249,9 +1511,13 @@ fn register_benches(c: &mut Criterion) {
     bench_list_splice_front(c);
     bench_list_sort(c);
     bench_list_random_access(c);
+    bench_list_drain(c);
+    bench_list_cursor_traverse(c);
+    bench_list_split(c);
 
     // Pool sharing benchmarks
     bench_pool_shared_lists(c);
+    bench_shrink_to_fit(c);
 
     // Heap benchmarks
     bench_heap_push(c);
@@ -1259,6 +1525,7 @@ fn register_benches(c: &mut Criterion) {
     bench_heap_decrease_key(c);
     bench_heap_push_pop(c);
     bench_heap_peek(c);
+    bench_heap_drain(c);
 
     // Nightly-only benchmarks
     #[cfg(feature = "bench-nightly")]

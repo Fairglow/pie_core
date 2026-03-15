@@ -41,10 +41,10 @@ These are suggestions for improvements:
 
 ### Benchmarks
 
-- [ ] Add `drain` benchmark for both `PieList` and `FibHeap`.
-- [ ] Add `shrink_to_fit` benchmark (key operation, not benchmarked).
-- [ ] Add cursor traversal benchmark (cursors are a major API feature).
-- [ ] Add `split_off` benchmark (only splice is benchmarked, not split).
+- [x] Add `drain` benchmark for both `PieList` and `FibHeap`. Added `list/drain` (pielist vs vec vs vecdeque) and `heap/drain` (piefibheap vs binaryheap) groups.
+- [x] Add `shrink_to_fit` benchmark (key operation, not benchmarked). Added `pool/shrink_to_fit` group measuring compaction after 50% deletion via `retain`.
+- [x] Add cursor traversal benchmark (cursors are a major API feature). Added `list/cursor_traverse` group comparing immutable cursor, mutable cursor, and iterator baseline.
+- [x] Add `split_off` benchmark (only splice is benchmarked, not split). Added `list/split` group comparing `cursor.split_before()` (O(n/2) seek + O(1) split) vs `Vec::split_off`.
 
 ### Documentation
 

@@ -1500,4 +1500,37 @@ mod tests {
         list.clear(&mut pool);
         assert!(pool.validate_integrity().is_ok());
     }
+
+    #[test]
+    fn test_reset_preserves_capacity() {
+        let mut pool = ElemPool::<i32>::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..50 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        // Don't clear list — reset handles cleanup.
+        list.without_leak_check();
+        let old_cap = pool.elems.capacity();
+        pool.reset();
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.free_len(), 0);
+        assert!(pool.elems.capacity() >= old_cap);
+        // Pool is usable after reset.
+        let mut list2 = PieList::new(&mut pool);
+        list2.push_back(99, &mut pool).unwrap();
+        assert_eq!(*list2.front(&pool).unwrap(), 99);
+        list2.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_reset_empty_pool() {
+        let mut pool = ElemPool::<i32>::new();
+        pool.reset();
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.free_len(), 0);
+        // Still usable.
+        let mut list = PieList::new(&mut pool);
+        list.push_back(1, &mut pool).unwrap();
+        list.clear(&mut pool);
+    }
 }

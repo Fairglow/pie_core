@@ -1392,4 +1392,79 @@ mod tests {
             other => panic!("expected InvalidHandle, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_default() {
+        let heap = FibHeap::<i32, &str>::default();
+        assert!(heap.is_empty());
+        assert_eq!(heap.len(), 0);
+        assert_eq!(heap.peek(), None);
+    }
+
+    #[test]
+    fn test_default_then_use() {
+        let mut heap = FibHeap::<i32, &str>::default();
+        heap.push(5, "five");
+        heap.push(3, "three");
+        heap.push(7, "seven");
+        assert_eq!(heap.peek(), Some((&3, &"three")));
+        assert_eq!(heap.pop(), Some((3, "three")));
+        assert_eq!(heap.pop(), Some((5, "five")));
+        assert_eq!(heap.pop(), Some((7, "seven")));
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn test_clear_then_reuse() {
+        let mut heap = FibHeap::new();
+        for i in 0..50 {
+            heap.push(i, ());
+        }
+        heap.clear();
+        assert!(heap.is_empty());
+        assert_eq!(heap.len(), 0);
+        assert_eq!(heap.peek(), None);
+        // Heap is fully usable after clear.
+        for i in (0..30).rev() {
+            heap.push(i, ());
+        }
+        assert_eq!(heap.len(), 30);
+        assert_eq!(heap.peek(), Some((&0, &())));
+        // Pop all to verify ordering.
+        let mut prev = None;
+        while let Some((k, _)) = heap.pop() {
+            if let Some(p) = prev {
+                assert!(k >= p);
+            }
+            prev = Some(k);
+        }
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn test_drain_size_hint() {
+        let mut heap = FibHeap::new();
+        for i in 0..5 {
+            heap.push(i, ());
+        }
+        let mut drain = heap.drain();
+        assert_eq!(drain.size_hint(), (5, Some(5)));
+        assert_eq!(drain.len(), 5);
+        drain.next();
+        assert_eq!(drain.size_hint(), (4, Some(4)));
+        assert_eq!(drain.len(), 4);
+        // Consume the rest.
+        for _ in drain {}
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn test_drain_is_fused() {
+        let mut heap = FibHeap::new();
+        heap.push(1, ());
+        let mut drain = heap.drain();
+        assert!(drain.next().is_some());
+        assert!(drain.next().is_none());
+        assert!(drain.next().is_none()); // fused: stays None
+    }
 }

@@ -975,6 +975,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
+
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.len == 0 {
             return None;
@@ -1020,6 +1025,11 @@ pub struct IterMut<'a, T: 'a> {
 
 impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
 
     #[inline]
     #[allow(unsafe_code)]
@@ -1090,6 +1100,11 @@ pub struct Drain<'a, T: 'a> {
 
 impl<'a, T> Iterator for Drain<'a, T> {
     type Item = T;
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -1711,6 +1726,172 @@ mod tests {
         let mut list = PieList::new(&mut pool);
         list.retain(&mut pool, |_| true);
         assert!(list.is_empty());
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_cursor_at_out_of_bounds() {
+        let mut pool = ElemPool::<i32>::new();
+        let mut list = PieList::new(&mut pool);
+        assert!(matches!(list.cursor_at(0, &pool), Err(crate::IndexError::IndexOutOfBounds)));
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_cursor_at_out_of_bounds_nonempty() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back(10, &mut pool).unwrap();
+        list.push_back(20, &mut pool).unwrap();
+        // Exactly at len is out of bounds.
+        assert!(matches!(list.cursor_at(2, &pool), Err(crate::IndexError::IndexOutOfBounds)));
+        assert!(matches!(list.cursor_at(100, &pool), Err(crate::IndexError::IndexOutOfBounds)));
+        // Valid indices work.
+        assert!(list.cursor_at(0, &pool).is_ok());
+        assert!(list.cursor_at(1, &pool).is_ok());
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_cursor_mut_at_out_of_bounds() {
+        let mut pool = ElemPool::<i32>::new();
+        let mut list = PieList::new(&mut pool);
+        assert!(matches!(list.cursor_mut_at(0, &mut pool), Err(crate::IndexError::IndexOutOfBounds)));
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_cursor_mut_at_out_of_bounds_nonempty() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..5 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        assert!(matches!(list.cursor_mut_at(5, &mut pool), Err(crate::IndexError::IndexOutOfBounds)));
+        assert!(matches!(list.cursor_mut_at(999, &mut pool), Err(crate::IndexError::IndexOutOfBounds)));
+        // Valid access at boundaries.
+        assert!(list.cursor_mut_at(0, &mut pool).is_ok());
+        assert!(list.cursor_mut_at(4, &mut pool).is_ok());
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_iter_size_hint() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..5 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let mut iter = list.iter(&pool);
+        assert_eq!(iter.size_hint(), (5, Some(5)));
+        assert_eq!(iter.len(), 5);
+        iter.next();
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next_back();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        // Consume remaining.
+        for _ in &mut iter {}
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_iter_mut_size_hint() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..4 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let mut iter = list.iter_mut(&mut pool);
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        iter.next();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        iter.next_back();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_iter_double_ended() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 1..=6 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let mut iter = list.iter(&pool);
+        // Interleave front and back.
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next_back(), Some(&6));
+        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next_back(), Some(&5));
+        assert_eq!(iter.next(), Some(&3));
+        assert_eq!(iter.next_back(), Some(&4));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_iter_mut_double_ended() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 1..=4 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        {
+            let mut iter = list.iter_mut(&mut pool);
+            *iter.next().unwrap() = 10;
+            *iter.next_back().unwrap() = 40;
+            *iter.next().unwrap() = 20;
+            *iter.next_back().unwrap() = 30;
+            assert_eq!(iter.next(), None);
+        }
+        let items: Vec<_> = list.iter(&pool).copied().collect();
+        assert_eq!(items, vec![10, 20, 30, 40]);
+        list.clear(&mut pool);
+    }
+
+    #[test]
+    fn test_drain_size_hint() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 0..5 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let mut drain = list.drain(&mut pool);
+        assert_eq!(drain.size_hint(), (5, Some(5)));
+        assert_eq!(drain.len(), 5);
+        drain.next();
+        assert_eq!(drain.size_hint(), (4, Some(4)));
+        drain.next_back();
+        assert_eq!(drain.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_drain_double_ended() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        for v in 1..=4 {
+            list.push_back(v, &mut pool).unwrap();
+        }
+        let mut drain = list.drain(&mut pool);
+        assert_eq!(drain.next(), Some(1));
+        assert_eq!(drain.next_back(), Some(4));
+        assert_eq!(drain.next(), Some(2));
+        assert_eq!(drain.next_back(), Some(3));
+        assert_eq!(drain.next(), None);
+        assert_eq!(drain.next_back(), None);
+    }
+
+    #[test]
+    fn test_iter_fused() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        list.push_back(1, &mut pool).unwrap();
+        let mut iter = list.iter(&pool);
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None); // Fused: stays None.
         list.clear(&mut pool);
     }
 }

@@ -31,13 +31,13 @@ These are suggestions for improvements:
 
 ### Testing
 
-- [ ] Add more comparative tests against `index_list`.
-- [ ] Add property-based testing with `proptest` or `quickcheck` for complex invariants.
-- [ ] Add tests for edge cases: maximum pool size, generation counter overflow.
-- [ ] Add tests for `Extend` trait on `PieViewMut` (implemented but untested).
-- [ ] Add tests for `cursor_at` / `cursor_mut_at` out-of-bounds error paths.
-- [ ] Add tests for iterator `size_hint` accuracy and `DoubleEndedIterator` in unit tests (currently only tested indirectly through views).
-- [ ] Add test for `FibHeap::Default` implementation.
+- [x] Add more comparative tests against `index_list`. Added `tests/index_list_compare.rs` with 8 comparative tests covering push_back, push_front, pop_front, pop_back, mixed ops, length tracking, front/back access, and iteration order.
+- [x] Add property-based testing with `proptest` or `quickcheck` for complex invariants. Added `proptest` dev-dependency and `tests/proptest_invariants.rs` with 9 property-based tests covering PieList (order, drain, retain, sort, reverse iteration), FibHeap (pop ordering, decrease_key, try_push), and pool slot reuse.
+- [x] Add tests for edge cases: maximum pool size, generation counter overflow. Added generation overflow wrapping/cycle tests in `generation.rs` and pool reset capacity/empty tests in `pool.rs`.
+- [x] Add tests for `Extend` trait on `PieViewMut` (implemented but untested). Added 4 tests in `view_mut.rs`: extend from vec, range, appending to existing list, and empty iterator.
+- [x] Add tests for `cursor_at` / `cursor_mut_at` out-of-bounds error paths. Added 4 tests in `list.rs` covering both cursor types with one-past-end and far-out-of-bounds indices.
+- [x] Add tests for iterator `size_hint` accuracy and `DoubleEndedIterator` in unit tests. Added `size_hint()` implementations to `Iter`, `IterMut`, and `Drain` (was missing — tests exposed the bug), plus 8 tests for size_hint, DoubleEndedIterator, and FusedIterator. Also added `FibHeap::Drain` size_hint and fused tests.
+- [x] Add test for `FibHeap::Default` implementation. Added `test_default` and `test_default_then_use` in `heap.rs`. Also added `test_clear_then_reuse` verifying heap correctness after clear/repopulate cycle.
 
 ### Benchmarks
 

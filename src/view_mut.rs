@@ -466,4 +466,51 @@ mod tests {
         
         view.clear();
     }
+
+    #[test]
+    fn test_extend_from_vec() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        let mut view = list.view_mut(&mut pool);
+        view.extend(vec![1, 2, 3, 4, 5]);
+        assert_eq!(view.len(), 5);
+        let items: Vec<_> = view.iter().copied().collect();
+        assert_eq!(items, vec![1, 2, 3, 4, 5]);
+        view.clear();
+    }
+
+    #[test]
+    fn test_extend_from_range() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        let mut view = list.view_mut(&mut pool);
+        view.extend(10..15);
+        assert_eq!(view.len(), 5);
+        let items: Vec<_> = view.iter().copied().collect();
+        assert_eq!(items, vec![10, 11, 12, 13, 14]);
+        view.clear();
+    }
+
+    #[test]
+    fn test_extend_appends_to_existing() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        let mut view = list.view_mut(&mut pool);
+        view.push_back(0);
+        view.extend([1, 2]);
+        assert_eq!(view.len(), 3);
+        let items: Vec<_> = view.iter().copied().collect();
+        assert_eq!(items, vec![0, 1, 2]);
+        view.clear();
+    }
+
+    #[test]
+    fn test_extend_empty_iterator() {
+        let mut pool = ElemPool::new();
+        let mut list = PieList::new(&mut pool);
+        let mut view = list.view_mut(&mut pool);
+        view.extend(core::iter::empty::<i32>());
+        assert!(view.is_empty());
+        view.clear();
+    }
 }

@@ -595,4 +595,34 @@ mod tests {
             assert_eq!( g.state(), state);
         }
     }
+
+    #[test]
+    fn test_generation_overflow_wraps() {
+        // Start near the maximum counter value.
+        // With 30 bits for counter, max counter = (2^30 - 1) = 0x3FFF_FFFF.
+        // The raw value for max counter with USED state:
+        let max_counter_raw = (0x3FFF_FFFF << 2) | ElemState::Used as u32;
+        let g = Generation::from_raw(max_counter_raw);
+        assert_eq!(g.counter(), 0x3FFF_FFFF);
+        assert_eq!(g.state(), ElemState::Used);
+        // Bump should wrap around to counter 0.
+        let bumped = g.bump_to(ElemState::Free);
+        assert_eq!(bumped.counter(), 0);
+        assert_eq!(bumped.state(), ElemState::Free);
+    }
+
+    #[test]
+    fn test_generation_overflow_cycle() {
+        // Simulate many bumps to verify wrapping is stable.
+        let mut g = Generation::new(ElemState::Free);
+        assert_eq!(g.counter(), 0);
+        // Bump many times and verify state is always correct.
+        for _ in 0..100 {
+            g = g.bump_to(ElemState::Used);
+            assert_eq!(g.state(), ElemState::Used);
+            g = g.bump_to(ElemState::Free);
+            assert_eq!(g.state(), ElemState::Free);
+        }
+        assert_eq!(g.counter(), 200);
+    }
 }

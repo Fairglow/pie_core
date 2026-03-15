@@ -117,7 +117,33 @@ See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology and results.
 ## Features
 
 - **`serde`**: Enables serialization and deserialization for `ElemPool`, `PieList`, and `FibHeap` via the Serde framework. To use it, enable the `serde` feature in your `Cargo.toml`.
-- **`petgraph`**: Provides helper functions to use `FibHeap` with the `petgraph` crate for graph algorithms.
+- **`petgraph`**: Provides a `dijkstra_pie_core` helper function to use `FibHeap` with the `petgraph` crate for graph algorithms. Enable the feature and use it like this:
+
+  ```toml
+  [dependencies]
+  pie_core = { version = "0.2", features = ["petgraph"] }
+  petgraph = "0.8"
+  ```
+
+  ```rust
+  use petgraph::graph::Graph;
+  use pie_core::petgraph::dijkstra_pie_core;
+
+  let mut g = Graph::new();
+  let a = g.add_node("A");
+  let b = g.add_node("B");
+  let c = g.add_node("C");
+  g.add_edge(a, b, 10);
+  g.add_edge(b, c, 20);
+  g.add_edge(a, c, 40);
+
+  let distances = dijkstra_pie_core(&g, a);
+  // A->B = 10, A->B->C = 30 (cheaper than the direct A->C = 40)
+  assert_eq!(distances[&c], 30);
+  ```
+
+  See `examples/dijkstra/` for a complete, annotated example with visualization.
+
 - **`no_std` support**: `pie_core` is `no_std` compatible by disabling default features, making it suitable for embedded environments.
 
 ## **Alternatives**
@@ -155,4 +181,10 @@ This project serves as an example of human-AI partnership, where the AI acts as 
 
 ## **AI Assessment**
 
-The result of this collaboration is a well-crafted, feature-rich library for its intended niche. It is efficient, idiomatic, and maintainable, with correctness supported by a thorough test suite covering unit, integration, and stress tests. See [TODO.md](TODO.md) for known areas of improvement.
+The result is a focused library that does what it claims. The Fibonacci heap provides O(1) amortized `decrease_key`, which benchmarks confirm outperforms `BinaryHeap` lazy-push for Dijkstra-style workloads. The linked list provides O(1) splice and split operations, which benchmarks confirm are orders of magnitude faster than `Vec` for mid-list structural mutations. These are the scenarios the library is built for.
+
+Outside those scenarios, standard collections are faster — often significantly so. The README and benchmarks document both sides honestly.
+
+The codebase is idiomatic Rust with no `unsafe` outside of `IterMut` (which requires it for split borrows, with a `SAFETY` comment explaining why). The test suite includes 196 tests: unit tests, integration tests, property-based tests via `proptest`, and comparative tests against `index_list`. All public API methods that can fail return `Result` rather than panicking.
+
+Known limitations are documented in the "Weaknesses" section above and in [CHANGELOG.md](CHANGELOG.md).

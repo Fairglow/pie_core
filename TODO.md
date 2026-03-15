@@ -48,9 +48,9 @@ These are suggestions for improvements:
 
 ### Documentation
 
-- [ ] Add a `CHANGELOG.md` for version history tracking.
-- [ ] Add usage examples in README for the `petgraph` feature (Dijkstra example).
-- [ ] Soften the "AI Assessment" in README: "professional-grade, feature-complete" overstates the current state given pending TODO items, missing property-based tests, and no CHANGELOG. Consider "well-crafted" and "feature-rich" instead.
+- [x] Add a `CHANGELOG.md` for version history tracking. Created with entries for all tagged versions (v0.2.0 through v0.2.14).
+- [x] Add usage examples in README for the `petgraph` feature (Dijkstra example). Added a `Cargo.toml` snippet and a short code example showing `dijkstra_pie_core`, plus a link to the full `examples/dijkstra/` example.
+- [x] Revise the "AI Assessment" in README to be accurate and evidence-based. Replaced subjective language with specific, verifiable claims backed by benchmarks and test counts.
 
 ### API Enhancements
 

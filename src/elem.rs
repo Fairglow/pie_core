@@ -233,18 +233,7 @@ impl<T> Elem<T> {
         }
     }
 
-    /// Creates a new element with the given slot as both next and prev,
-    /// using a raw u32 state value (for backward compatibility).
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn new_self_ref_raw(slot: Slot, state: u32) -> Self {
-        Self {
-            next: slot,
-            prev: slot,
-            vers: Generation::from_raw(state),
-            data: MaybeUninit::uninit(),
-        }
-    }
+
 
     // --- State Checkers (delegate to Generation) ---
 
@@ -323,12 +312,7 @@ impl<T> Elem<T> {
         self.bump_gen(ElemState::Sentinel)
     }
 
-    /// Force sets the state to sentinel (used during init).
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn force_sentinel(&mut self) {
-        self.vers = self.vers.with_state(ElemState::Sentinel);
-    }
+
 
     // --- Link Operations ---
 

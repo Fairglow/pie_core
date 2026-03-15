@@ -36,7 +36,7 @@ pub fn dijkstra_pie_core(
             if new_dist < current_dist {
                 distances[neighbor.index()] = new_dist;
                 if let Some(handle) = pq_handles[neighbor.index()] {
-                    heap.decrease_key(handle, new_dist).unwrap();
+                    heap.decrease_key(handle, new_dist).expect("valid handle for decrease_key");
                 } else {
                     let handle = heap.push(new_dist, neighbor);
                     pq_handles[neighbor.index()] = Some(handle);

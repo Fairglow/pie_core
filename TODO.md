@@ -22,12 +22,12 @@ These are suggestions for improvements:
 
 ### Code Quality
 
-- [ ] Remove dead code: `Elem::new_self_ref_raw`, `Elem::force_sentinel`, `ElemPool::get_elem`, and `ElemPool::elem` are unused. Either remove them or move behind `#[cfg(test)]` if only needed for tests. `ElemPool::free_sentinel_index` is only used in one test and should be `#[cfg(test)]`.
-- [ ] Replace bare `.unwrap()` calls in non-test code with `.expect("descriptive invariant")` per repo guidelines (e.g., in `sort()`, `splice()`, `pop()`, `consolidate()`).
-- [ ] Document the `shallow_copy()` pattern more prominently: it creates aliased list handles to work around borrow checker limitations in `FibHeap`. The copies must not outlive the operation and must not perform conflicting mutations. Consider whether field-level extraction could replace some uses.
-- [ ] `FibHeap::clear()` discards the old pool's capacity entirely by creating a new `ElemPool`. For heaps that will be reused at similar sizes, this forces re-growing. Consider clearing in-place if capacity reuse matters.
-- [ ] `cascading_cut` in `heap.rs` is recursive. Fibonacci heap theory bounds depth to O(log n), but an iterative rewrite would eliminate any stack overflow risk for adversarial inputs.
-- [ ] Fix the size comment in `index.rs` (line 5): claims "16 bytes on 64-bit, 12 bytes on 32-bit" but `Index<T>` is 8 bytes for most `T` types (two `u32` fields + zero-sized `PhantomData`). The ARCHITECTURE.md correctly states "8-byte Size".
+- [x] Remove dead code: `Elem::new_self_ref_raw`, `Elem::force_sentinel`, `ElemPool::get_elem`, and `ElemPool::elem` removed. `ElemPool::free_sentinel_index` gated behind `#[cfg(test)]`.
+- [x] Replace bare `.unwrap()` calls in non-test code with `.expect("descriptive invariant")` for pool operations (data, index_del, index_linkout, index_link_after, etc.). `Slot::unwrap()` retained as it already uses `.expect()` internally.
+- [x] Document the `shallow_copy()` pattern more prominently with explicit invariants for aliased handle usage in `FibHeap`.
+- [x] `FibHeap::clear()` now clears the pool in-place via `ElemPool::reset()`, preserving allocated capacity.
+- [x] `cascading_cut` in `heap.rs` rewritten as an iterative loop.
+- [x] Fix the size comment in `index.rs`: corrected to "8 bytes — PhantomData<T> is zero-sized".
 
 ### Testing
 

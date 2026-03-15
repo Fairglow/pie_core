@@ -5,7 +5,7 @@
 //! ## Handle Design
 //!
 //! ```text
-//! Index<T> (16 bytes on 64-bit, 12 bytes on 32-bit)
+//! Index<T> (8 bytes — PhantomData<T> is zero-sized)
 //! ┌─────────────────┬─────────────────┬───────────────┐
 //! │   slot: u32     │   vers: u32     │ PhantomData<T>│
 //! │   (position)    │   (generation)  │ (type safety) │

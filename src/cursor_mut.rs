@@ -369,10 +369,10 @@ impl<'a, T> CursorMut<'a, T> {
         // Move to the next element before modifying links.
         self.current = pool.next(old_current);
 
-        pool.index_linkout(old_current).unwrap();
+        pool.index_linkout(old_current).expect("cursor element is linked in list");
         self.list.len -= 1;
         let data = pool.data_swap(old_current, None);
-        pool.index_del(old_current).unwrap();
+        pool.index_del(old_current).expect("valid node for deletion");
 
         // Update logical index.
         // If we hit the sentinel (After End), index becomes len.

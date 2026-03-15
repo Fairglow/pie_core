@@ -208,9 +208,8 @@ impl<K, V> FibHeap<K, V> {
     /// This is an O(n) operation, as it must deallocate all nodes
     /// within its internal pool.
     pub fn clear(&mut self) {
-        let mut new_pool = ElemPool::new();
-        self.roots = PieList::new(&mut new_pool).without_leak_check();
-        self.pool = new_pool;
+        self.pool.reset();
+        self.roots = PieList::new(&mut self.pool).without_leak_check();
         self.min = FibHandle::NONE;
         self.len = 0;
         self.consolidate_buf.clear();
@@ -292,8 +291,8 @@ impl<K: Ord, V> FibHeap<K, V> {
         } else {
             // These unwraps are safe because `min` and `handle`
             // are guaranteed to be valid, non-sentinel nodes.
-            let min_key = &self.pool.data(self.min).unwrap().key;
-            let new_key = &self.pool.data(handle).unwrap().key;
+            let min_key = &self.pool.data(self.min).expect("valid node data").key;
+            let new_key = &self.pool.data(handle).expect("valid node data").key;
             if new_key < min_key {
                 self.min = handle;
             }
@@ -349,10 +348,10 @@ impl<K: Ord, V> FibHeap<K, V> {
         }
         let min_handle = self.min;
         // 1. Unlink the min node from the root list.
-        self.pool.index_linkout(min_handle).unwrap();
+        self.pool.index_linkout(min_handle).expect("linked element");
         self.roots.len -= 1;
         // 2. Take the node data out of the pool.
-        let min_node_data = self.pool.data_swap(min_handle, None).unwrap();
+        let min_node_data = self.pool.data_swap(min_handle, None).expect("valid node for data_swap");
         self.len -= 1;
         // 3. Move the min node's children to the root list.
         let num_children = min_node_data.children.len;
@@ -361,23 +360,23 @@ impl<K: Ord, V> FibHeap<K, V> {
             let last_child = self.pool.prev(min_node_data.children.sentinel);
             let root_last = self.pool.prev(self.roots.sentinel);
             // Splice children into the root list.
-            self.pool.get_elem_mut(root_last).unwrap().set_next(Slot::new(first_child.slot));
-            self.pool.get_elem_mut(first_child).unwrap().set_prev(Slot::new(root_last.slot));
-            self.pool.get_elem_mut(last_child).unwrap().set_next(Slot::new(self.roots.sentinel.slot));
-            self.pool.get_elem_mut(self.roots.sentinel).unwrap().set_prev(Slot::new(last_child.slot));
+            self.pool.get_elem_mut(root_last).expect("valid element").set_next(Slot::new(first_child.slot));
+            self.pool.get_elem_mut(first_child).expect("valid element").set_prev(Slot::new(root_last.slot));
+            self.pool.get_elem_mut(last_child).expect("valid element").set_next(Slot::new(self.roots.sentinel.slot));
+            self.pool.get_elem_mut(self.roots.sentinel).expect("valid element").set_prev(Slot::new(last_child.slot));
             self.roots.len += num_children;
             // Un-parent all moved children.
             let mut current = first_child;
             for _ in 0..num_children {
-                self.pool.data_mut(current).unwrap().parent = FibHandle::NONE;
+                self.pool.data_mut(current).expect("valid node data").parent = FibHandle::NONE;
                 current = self.pool.next(current);
             }
         }
         // 5. Return memory to the pool.
         self.pool
             .index_del(min_node_data.children.sentinel)
-            .unwrap();
-        self.pool.index_del(min_handle).unwrap();
+            .expect("deletable children sentinel");
+        self.pool.index_del(min_handle).expect("deletable element");
         // 6. Consolidate the root list.
         if self.roots.is_empty() {
             self.min = FibHandle::NONE;
@@ -402,15 +401,15 @@ impl<K: Ord, V> FibHeap<K, V> {
             current = self.pool.next(current);
         }
         let roots_slot = Slot::new(self.roots.sentinel.slot);
-        self.pool.get_elem_mut(self.roots.sentinel).unwrap()
+        self.pool.get_elem_mut(self.roots.sentinel).expect("valid element")
             .set_links(roots_slot, roots_slot);
         self.roots.len = 0;
         for i in 0..self.consolidate_buf.len() {
             let handle = self.consolidate_buf[i];
             let mut x = handle;
-            let mut d = self.pool.data(x).unwrap().degree;
+            let mut d = self.pool.data(x).expect("valid node data").degree;
             while let Some(mut y) = a[d] {
-                if self.pool.data(x).unwrap().key > self.pool.data(y).unwrap().key {
+                if self.pool.data(x).expect("valid node data").key > self.pool.data(y).expect("valid node data").key {
                     mem::swap(&mut x, &mut y);
                 }
                 self.heap_link(y, x);
@@ -420,7 +419,7 @@ impl<K: Ord, V> FibHeap<K, V> {
             a[d] = Some(x);
         }
         for handle in a.iter().flatten() {
-            self.pool.index_link_after(*handle, self.roots.sentinel).unwrap();
+            self.pool.index_link_after(*handle, self.roots.sentinel).expect("valid list insertion");
             self.roots.len += 1;
             self.update_min(*handle);
         }
@@ -428,13 +427,13 @@ impl<K: Ord, V> FibHeap<K, V> {
 
     /// Links node `y` as a child of node `x`.
     fn heap_link(&mut self, y: FibHandle<K, V>, x: FibHandle<K, V>) {
-        let mut x_children = self.pool.data_mut(x).unwrap().children.shallow_copy();
-        self.pool.index_link_after(y, x_children.sentinel).unwrap();
+        let mut x_children = self.pool.data_mut(x).expect("valid node data").children.shallow_copy();
+        self.pool.index_link_after(y, x_children.sentinel).expect("valid list insertion");
         x_children.len += 1;
-        self.pool.data_mut(x).unwrap().children = x_children;
-        self.pool.data_mut(x).unwrap().degree += 1;
-        self.pool.data_mut(y).unwrap().parent = x;
-        self.pool.data_mut(y).unwrap().marked = false;
+        self.pool.data_mut(x).expect("valid node data").children = x_children;
+        self.pool.data_mut(x).expect("valid node data").degree += 1;
+        self.pool.data_mut(y).expect("valid node data").parent = x;
+        self.pool.data_mut(y).expect("valid node data").marked = false;
     }
 
     /// Decreases the key of a node in the heap.
@@ -483,10 +482,10 @@ impl<K: Ord, V> FibHeap<K, V> {
         };
         {
             // This unwrap is now 100% safe because of the check above.
-            let node_mut = self.pool.data_mut(handle).unwrap();
+            let node_mut = self.pool.data_mut(handle).expect("valid node data");
             node_mut.key = new_key;
         }
-        if parent.is_some() && self.pool.data(handle).unwrap().key < self.pool.data(parent).unwrap().key {
+        if parent.is_some() && self.pool.data(handle).expect("valid node data").key < self.pool.data(parent).expect("valid node data").key {
             self.cut(handle, parent);
             self.cascading_cut(parent);
         }
@@ -497,31 +496,32 @@ impl<K: Ord, V> FibHeap<K, V> {
     /// Cuts node `x` from its parent `y`.
     fn cut(&mut self, x: FibHandle<K, V>, y: FibHandle<K, V>) {
         // 1. Unlink `x` from `y`'s child list.
-        self.pool.index_linkout(x).unwrap();
-        let mut y_children = self.pool.data_mut(y).unwrap().children.shallow_copy();
+        self.pool.index_linkout(x).expect("linked element");
+        let mut y_children = self.pool.data_mut(y).expect("valid node data").children.shallow_copy();
         y_children.len -= 1;
-        self.pool.data_mut(y).unwrap().children = y_children;
-        self.pool.data_mut(y).unwrap().degree -= 1;
+        self.pool.data_mut(y).expect("valid node data").children = y_children;
+        self.pool.data_mut(y).expect("valid node data").degree -= 1;
         // 2. Add `x` to the root list.
-        self.pool.index_link_after(x, self.roots.sentinel).unwrap();
+        self.pool.index_link_after(x, self.roots.sentinel).expect("valid list insertion");
         self.roots.len += 1;
         // 3. Update `x`'s parent and mark.
-        self.pool.data_mut(x).unwrap().parent = FibHandle::NONE;
-        self.pool.data_mut(x).unwrap().marked = false;
+        self.pool.data_mut(x).expect("valid node data").parent = FibHandle::NONE;
+        self.pool.data_mut(x).expect("valid node data").marked = false;
     }
 
     /// Performs a cascading cut on node `y`.
-    fn cascading_cut(&mut self, y: FibHandle<K, V>) {
-        let y_parent = self.pool.data(y).unwrap().parent;
-        if y_parent.is_some() {
-            if !self.pool.data(y).unwrap().marked {
-                // This is the first child `y` has lost. Mark it.
-                self.pool.data_mut(y).unwrap().marked = true;
-            } else {
-                // `y` has already lost a child, so cut it too.
-                self.cut(y, y_parent);
-                self.cascading_cut(y_parent);
+    fn cascading_cut(&mut self, mut y: FibHandle<K, V>) {
+        loop {
+            let y_parent = self.pool.data(y).expect("valid node data").parent;
+            if y_parent.is_none() {
+                break;
             }
+            if !self.pool.data(y).expect("valid node data").marked {
+                self.pool.data_mut(y).expect("valid node data").marked = true;
+                break;
+            }
+            self.cut(y, y_parent);
+            y = y_parent;
         }
     }
 
@@ -573,7 +573,7 @@ impl<K: Ord, V> FibHeap<K, V> {
             .collect();
         // Now we can mutably access each node's data.
         for index in used_indices {
-            let node = self.pool.data_mut(index).unwrap();
+            let node = self.pool.data_mut(index).expect("valid node data");
             // Fix parent pointer
             if let Some(new_parent) = map.get(&node.parent) {
                 node.parent = *new_parent;
@@ -673,7 +673,7 @@ impl<K: Ord + fmt::Display, V: fmt::Display> FibHeap<K, V> {
     ) -> fmt::Result {
         // This unwrap is safe within this context, as we only ever call this
         // with valid handles from traversing the heap structure.
-        let node = self.pool.data(handle).unwrap();
+        let node = self.pool.data(handle).expect("valid node data");
         // Print the current node's line
         let connector = if is_last { "└─" } else { "├─" };
         let marked_str = if node.marked { " (M)" } else { "" };

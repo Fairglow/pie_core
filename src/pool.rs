@@ -289,8 +289,8 @@ impl<T> ElemPool<T> {
     }
 
     /// Returns the fixed index for the free list's sentinel node, which is always 0.
+    #[cfg(test)]
     #[inline(always)]
-    #[allow(dead_code)]
     fn free_sentinel_index() -> Index<T> {
         Index::from(0u32)
     }
@@ -351,6 +351,22 @@ impl<T> ElemPool<T> {
     #[inline]
     pub fn reserve(&mut self, additional: usize) {
         self.elems.reserve(additional);
+    }
+
+    /// Resets the pool to its initial empty state while preserving the
+    /// allocated capacity of the underlying storage.
+    pub(crate) fn reset(&mut self) {
+        for elem in self.elems.iter_mut() {
+            if elem.is_used() {
+                #[allow(unsafe_code)]
+                // SAFETY: Element is in USED state, so data is initialized.
+                unsafe { let _ = elem.take_data_unchecked(); }
+            }
+        }
+        self.elems.clear();
+        self.elems.push(Elem::new_self_ref(Slot::new(0), ElemState::Sentinel));
+        self.freed = 0;
+        self.used = 0;
     }
 
     /// Validates the structural integrity of the pool after deserialization.
@@ -647,13 +663,7 @@ impl<T> ElemPool<T> {
         Ok(())
     }
 
-    /// Gets an immutable reference to the element metadata at the given index.
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn get_elem(&self, index: Index<T>) -> Result<&Elem<T>, IndexError> {
-        let slot = self.validate_vers(index)?;
-        Ok(&self.elems[slot])
-    }
+
 
     /// Gets a mutable reference to the element metadata at the given index.
     #[inline]
@@ -833,12 +843,7 @@ impl<T> ElemPool<T> {
         self.elems[slot].prev
     }
 
-    #[allow(dead_code)]
-    /// Gets an immutable reference to element by slot (unchecked).
-    #[inline]
-    pub(crate) fn elem(&self, slot: usize) -> &Elem<T> {
-        &self.elems[slot]
-    }
+
 
     /// Gets a mutable reference to element by slot (unchecked).
     #[inline]

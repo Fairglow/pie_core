@@ -112,17 +112,23 @@ pub struct PieList<T> {
 impl<T> PieList<T> {
     /// Creates a shallow copy of the list handle.
     ///
-    /// # Safety Warning
+    /// # Safety Warning — Aliased Handle
     ///
     /// This creates a second handle pointing to the **same sentinel and elements**.
     /// Both handles will refer to the exact same underlying data in the pool.
     /// Modifications through one handle (push, pop, clear) will be visible
     /// through the other, and clearing one will invalidate the other.
     ///
-    /// This is intended **only** for internal use where a temporary copy of the
-    /// list metadata is needed (e.g., reading `children` in `FibHeap` operations
-    /// while the parent node is mutably borrowed). The copy must not outlive the
-    /// operation, and must not be used to perform conflicting mutations.
+    /// This exists **only** for `FibHeap` internals where a temporary copy of
+    /// the child-list metadata is needed while the parent node is mutably
+    /// borrowed through the pool. Invariants:
+    ///
+    /// - The copy must not outlive the enclosing operation.
+    /// - The copy must not be used to perform mutations that conflict with
+    ///   concurrent pool borrows (e.g., pushing to a shallow copy while the
+    ///   original is being iterated).
+    /// - The copy's `len` field may become stale; callers must write it back
+    ///   to the authoritative `Node.children` after the operation.
     #[inline]
     pub(crate) fn shallow_copy(&self) -> Self {
         PieList {
@@ -401,7 +407,7 @@ impl<T> PieList<T> {
             let next_slot = pool.next_slot(current_slot).unwrap();
             let current_idx = pool.index_from_slot(current_slot);
             pool.data_swap(current_idx, None);
-            pool.index_del(current_idx).unwrap();
+            pool.index_del(current_idx).expect("valid node for deletion");
             current_slot = next_slot;
         }
 
@@ -530,7 +536,7 @@ impl<T> PieList<T> {
             // Pop the front element into a new single-element run.
             let front_slot = pool.next_slot(self.sentinel.slot as usize).unwrap();
             let front_node = pool.index_from_slot(front_slot);
-            pool.index_linkout(front_node).unwrap();
+            pool.index_linkout(front_node).expect("node is linked in list");
             self.len -= 1;
 
             // Pop a sentinel from the reuse pool for this new run.
@@ -544,7 +550,7 @@ impl<T> PieList<T> {
             };
 
             // Create a run containing just this one element.
-            pool.index_link_after(front_node, run_sentinel).unwrap();
+            pool.index_link_after(front_node, run_sentinel).expect("valid list insertion point");
             let mut run = PieList {
                 sentinel: run_sentinel,
                 len: 1,
@@ -646,7 +652,7 @@ impl<T> PieList<T> {
         }
         // If this list is empty, we can perform an O(1) splice to take other's elements.
         if self.is_empty() {
-            self.splice(self.sentinel, &mut other, pool).unwrap();
+            self.splice(self.sentinel, &mut other, pool).expect("valid splice position");
             return;
         }
         // The current node in `self` that we are comparing against.
@@ -655,20 +661,20 @@ impl<T> PieList<T> {
         while !other.is_empty() && current_self_slot != self.sentinel.slot as usize {
             // These unwraps are safe because the loop conditions guarantee both lists
             // have at least one element and that current_self_slot is not the sentinel.
-            let self_data = pool.data_at(current_self_slot).unwrap();
-            let other_data = other.front(pool).unwrap();
+            let self_data = pool.data_at(current_self_slot).expect("slot contains valid data");
+            let other_data = other.front(pool).expect("non-empty list has front");
             // If the `other` node is smaller or equal, move it into `self`.
             // The equality check is crucial for maintaining a stable sort.
             if compare(other_data, self_data) == cmp::Ordering::Less {
                 let node_to_move_slot = pool.next_slot(other.sentinel.slot as usize).unwrap();
                 let node_to_move = pool.index_from_slot(node_to_move_slot);
                 // Unlink the node from the front of `other`.
-                pool.index_linkout(node_to_move).unwrap();
+                pool.index_linkout(node_to_move).expect("node is linked in list");
                 other.len -= 1;
                 // Link it into `self` right before the current node.
                 let current_self_node = pool.index_from_slot(current_self_slot);
                 pool.index_link_before(node_to_move, current_self_node)
-                    .unwrap();
+                    .expect("valid list insertion point");
                 self.len += 1;
             } else {
                 // The `self` node is smaller, so it's in the correct place.
@@ -679,7 +685,7 @@ impl<T> PieList<T> {
         // If `other` still has elements, they are all larger than any in `self`.
         // We can efficiently splice the remainder onto the end of `self`.
         if !other.is_empty() {
-            self.splice(self.sentinel, &mut other, pool).unwrap();
+            self.splice(self.sentinel, &mut other, pool).expect("valid splice position");
         }
     }
 
@@ -1100,7 +1106,7 @@ impl<'a, T> Iterator for Drain<'a, T> {
         // just need to consume the chain and deallocate the nodes.
         let current_idx = self.pool.index_from_slot(current_slot);
         let data = self.pool.data_swap(current_idx, None);
-        self.pool.index_del(current_idx).unwrap();
+        self.pool.index_del(current_idx).expect("valid node for deletion");
 
         data
     }
@@ -1119,7 +1125,7 @@ impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
 
         let current_idx = self.pool.index_from_slot(current_slot);
         let data = self.pool.data_swap(current_idx, None);
-        self.pool.index_del(current_idx).unwrap();
+        self.pool.index_del(current_idx).expect("valid node for deletion");
 
         data
     }

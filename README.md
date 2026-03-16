@@ -64,8 +64,8 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
 ### ✅ Use `pie_core` When...
 
-- **Repeated Middle Insertions**: Inserting 100 elements at random positions into a 100k-element list: PieList is **415x faster** than Vec (O(n) total vs O(n²)).
-- **O(1) Splice/Split Operations**: Merging lists at the front: PieList is **1300x faster** than Vec at large sizes.
+- **Repeated Middle Insertions**: Inserting 100 elements at random positions into a 100k-element list: PieList is **426x faster** than Vec (O(n) total vs O(n²)).
+- **O(1) Splice/Split Operations**: Merging lists at the front: PieList is **1528x faster** than Vec at large sizes.
 - **Decrease-Key Priority Queues**: When you need a priority queue with efficient `decrease_key` for Dijkstra's, Prim's, or A* algorithms.
 - **Managing Many Small Structures**: When you need many independent lists sharing a single memory pool.
 - **Stable Indices**: Indices survive insertions/removals (only `shrink_to_fit()` invalidates them).
@@ -73,8 +73,8 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
 ### ❌ Prefer `Vec` or Standard Collections When...
 
-- **Sequential Iteration**: Vec is **25x faster** for summing all elements (cache locality).
-- **Random Access by Index**: Vec is **2400x faster** for random lookups (O(1) vs O(n)).
+- **Sequential Iteration**: Vec is **22x faster** for summing all elements (cache locality).
+- **Random Access by Index**: Vec is **2450x faster** for random lookups (O(1) vs O(n)).
 - **Sorting**: Vec's pdqsort is **10x faster** than PieList's merge sort.
 - **Simple Append-Only Workloads**: Vec has **2.6x less overhead** for push_back.
 - **Simple Priority Queues**: If you don't need `decrease_key`, use `BinaryHeap`.
@@ -83,11 +83,11 @@ This crate is not a general-purpose replacement for `Vec` or `VecDeque`. It exce
 
 | Operation | Best Choice | Speedup |
 |-----------|-------------|--------|
-| Multi-insert at random positions | PieList | 415x faster than Vec |
-| Splice at front | PieList | 1300x faster than Vec |
-| Push to front | PieList | 7x faster than Vec |
-| Iterate all elements | Vec | 25x faster than PieList |
-| Random index access | Vec | 2400x faster than PieList |
+| Multi-insert at random positions | PieList | 426x faster than Vec |
+| Splice at front | PieList | 1528x faster than Vec |
+| Push to front | PieList | 7.6x faster than Vec |
+| Iterate all elements | Vec | 22x faster than PieList |
+| Random index access | Vec | 2450x faster than PieList |
 | Sort | Vec | 10x faster than PieList |
 
 See [BENCHMARKS.md](BENCHMARKS.md) for detailed methodology and results.

@@ -27,42 +27,53 @@ cargo run -p bench-table -- --markdown
 
 These benchmarks compare `PieList` against standard library collections and other arena-based lists.
 
-| Benchmark | What it measures | Who should win |
-|-----------|------------------|----------------|
-| `append` | Push N elements to back | Vec (no link overhead) |
-| `prepend` | Push N elements to front | PieList/VecDeque (O(1) vs Vec's O(n)) |
-| `iterate` | Sum all elements | Vec (best cache locality) |
-| `mid_modify` | Single insert+remove at middle | IndexList/PieList (O(1) vs Vec's O(n)) |
-| `multi_insert` | Insert 100 elements at random positions | **PieList** (O(n) total vs Vec's O(n²)) |
-| `splice` | Merge two lists at middle (includes seek) | PieList (O(1) splice, but O(n) seek) |
-| `splice_front` | Merge two lists at front (no seek) | **PieList** (O(1) vs Vec's O(n) shift) |
-| `sort` | In-place sorting | Vec (pdqsort is highly optimized) |
-| `random_access` | 100 random index lookups | Vec (O(1) vs linked list O(n)) |
+| Benchmark | What it measures | Who should win | Real-world scenario |
+|-----------|------------------|----------------|---------------------|
+| `append` | Push N elements to back | Vec (no link overhead) | Building a collection from a stream of events or records |
+| `prepend` | Push N elements to front | PieList/VecDeque (O(1) vs Vec's O(n)) | Undo stack, MRU cache, prepending log entries |
+| `iterate` | Sum all elements | Vec (best cache locality) | Aggregation, rendering a list, serialization |
+| `mid_modify` | Single insert+remove at middle | IndexList/PieList (O(1) vs Vec's O(n)) | Text editor: insert/delete a character at the cursor |
+| `multi_insert` | Insert 100 elements at random positions | **PieList** (O(n) total vs Vec's O(n²)) | Collaborative editing: applying a batch of remote insertions |
+| `splice` | Merge two lists at middle (includes seek) | PieList (O(1) splice, but O(n) seek) | Paste clipboard content into the middle of a document |
+| `splice_front` | Merge two lists at front (no seek) | **PieList** (O(1) vs Vec's O(n) shift) | Prepending a header/preamble to an existing list |
+| `sort` | In-place sorting | Vec (pdqsort is highly optimized) | Sorting a dataset for display or binary search |
+| `random_access` | 100 random index lookups | Vec (O(1) vs linked list O(n)) | Jump-to-line in a text editor, index-based lookups |
+| `drain` | Consume all elements via draining iterator | Vec (contiguous memory) | Teardown: processing all items then discarding the list |
+| `cursor_traverse` | Forward scan via cursor with peek | PieList iter (no cursor overhead) | Cursor-based scan: find-next, search within a list |
+| `split` | Split a list at the midpoint | PieList (O(1) split after O(n/2) seek) | Splitting a document into two halves for parallel processing |
+| `pop_front` | Pop all from front (FIFO drain) | PieList/VecDeque (O(1) vs Vec O(n)) | Queue pattern: processing items in arrival order |
+| `pop_back` | Pop all from back (LIFO drain) | All similar (all O(1) per pop) | Stack pattern: undo history, backtracking |
+| `retain` | Filter ~50% in place by predicate | Vec/VecDeque (cache locality) | Removing dead entities, filtering stale cache entries |
 
 ### Pool Operations (`pool/`)
 
-| Benchmark | What it measures | Notes |
-|-----------|------------------|-------|
-| `shared_lists` | Create N lists, fill with M elements, clear | Shows pool allocation patterns |
+| Benchmark | What it measures | Notes | Real-world scenario |
+|-----------|------------------|-------|---------------------|
+| `shared_lists` | Create N lists, fill with M elements, clear | Shows pool allocation patterns | ECS/game engine: many entity-component lists sharing one allocator |
+| `shrink_to_fit` | Compact pool after 50% deletion | Measures defragmentation cost | Long-running server: periodic memory reclamation after churn |
 
 ### Heap Operations (`heap/`)
 
 These benchmarks compare `FibHeap` against other priority queue implementations.
 
-| Benchmark | What it measures | Who should win |
-|-----------|------------------|----------------|
-| `push` | Bulk insertion | All similar (O(1) amortized for Fib, O(log n) for Binary) |
-| `pop` | Drain all elements | BinaryHeap (simpler structure, better cache locality) |
-| `decrease_key` | Update priority | **PieFibHeap** (O(1) amortized - this is its raison d'être) |
+| Benchmark | What it measures | Who should win | Real-world scenario |
+|-----------|------------------|----------------|---------------------|
+| `push` | Bulk insertion | All similar (O(1) amortized for Fib, O(log n) for Binary) | Job scheduler: enqueuing a burst of tasks |
+| `pop` | Pop all elements in priority order | BinaryHeap (simpler structure, better cache locality) | Event loop: draining all pending events |
+| `decrease_key` | Update priority of existing elements | **PieFibHeap** (O(1) amortized) | Dijkstra/Prim/A*: relaxing edge weights |
+| `push_pop` | Push N then pop N (combined lifecycle) | BinaryHeap (consolidation overhead for Fib) | Task queue: batch enqueue then drain to completion |
+| `peek` | Access minimum without removal | All O(1) | Event loop: check next deadline without dequeuing |
+| `drain` | Pop all elements via drain iterator | BinaryHeap (simpler pop) | Shutdown: process remaining items in priority order |
+| `mixed_workload` | Interleaved push/decrease_key/pop | *PieFibHeap* (O(1) decrease_key) | Dijkstra-like access pattern without graph overhead |
 
 ### Algorithm Benchmarks (`algo/`)
 
-Real-world algorithm comparisons showing practical impact.
+Real-world algorithm comparisons showing practical impact. These are the most important benchmarks because they measure end-to-end performance in realistic scenarios where the data structure choice actually matters.
 
-| Benchmark | What it measures | Notes |
-|-----------|------------------|-------|
-| `dijkstra_dense` | Dense graph (n=100, m=5000) | Tests decrease_key impact |
-| `dijkstra_sparse` | Sparse graph (n=10k, m=20k) | Grid-like structure |
+| Benchmark | What it measures | Notes | Real-world scenario |
+|-----------|------------------|-------|---------------------|
+| `dijkstra_dense` | Dense graph (n=100 and n=1000) | Tests decrease_key impact with many relaxations | Routing in a highly-connected network (mesh WiFi, datacenter) |
+| `dijkstra_sparse` | Sparse graph (n=10k, m=20k) | Grid-like structure, fewer relaxations | Pathfinding on a map grid (game AI, robot navigation) |
 
 ## Benchmark Sizes
 
@@ -83,28 +94,37 @@ These results show relative performance (lower is better, 1.00x is fastest):
 
 | Benchmark | PieList | Vec | Notes |
 |-----------|---------|-----|-------|
-| `multi_insert` (100k) | 1.00x | **415x** | 100 inserts at random positions |
-| `splice_front` (100k) | 1.00x | **1300x** | Merge at front, no traversal |
-| `prepend` (1k) | 1.00x | **7.3x** | Push to front repeatedly |
+| `multi_insert` (100k) | 1.00x | **426x** | 100 inserts at random positions |
+| `splice_front` (100k) | 1.00x | **1528x** | Merge at front, no traversal |
+| `prepend` (1k) | 1.00x | **7.6x** | Push to front repeatedly |
+
+**Note on `prepend` and Vec**: The `prepend` benchmark excludes Vec for N > 1,000 because Vec's O(n) per insertion makes repeated front-insertion O(n²) total. At N=10,000 this would take ~100x longer than at N=1,000, dominating the benchmark run time without providing useful signal. VecDeque and PieList both handle front-insertion in O(1).
 
 ### Where Vec Wins
 
 | Benchmark | Vec | PieList | Notes |
 |-----------|-----|---------|-------|
-| `iterate` (10k) | 1.00x | **25x** | Sum all elements |
-| `random_access` (1k) | 1.00x | **2400x** | 100 random lookups |
-| `sort` (10k) | 1.00x | **10.6x** | In-place sorting |
+| `iterate` (10k) | 1.00x | **22x** | Sum all elements |
+| `random_access` (1k) | 1.00x | **2450x** | 100 random lookups |
+| `sort` (10k) | 1.00x | **10.2x** | In-place sorting |
 | `append` (10k) | 1.00x | **2.6x** | Push to back |
 
 ### Heap Results
 
-| Benchmark | BinaryHeap | FibHeap | Notes |
-|-----------|------------|---------|-------|
-| `push` | 1.00x | 3.9x | Bulk insertion |
-| `pop` | 1.00x | **6.5x** | Extract all elements |
-| `decrease_key` | N/A | **1.00x** | FibHeap's key advantage |
-| `dijkstra_dense` | 1.00x | 1.35x | Dense graph (n=100, m=5000) |
-| `dijkstra_sparse` | 1.00x | **4.1x** | Sparse graph (n=10k, m=20k) |
+| Benchmark | BinaryHeap | FibHeap | PriorityQueue | Notes |
+|-----------|------------|---------|---------------|-------|
+| `push` (1k) | 1.00x | 6.4x | 12.0x | Bulk insertion |
+| `pop` (1k) | 1.00x | **10.8x** | 2.4x | Extract all elements |
+| `decrease_key` (1k) | N/A (lazy push) | **1.00x** | 2.0x | FibHeap's key advantage |
+| `push_pop` (1k) | 1.00x | 6.5x | 3.2x | Full lifecycle: enqueue then drain |
+| `peek` | ~same | ~same | ~same | All O(1) |
+| `drain` (1k) | 1.00x | **14.1x** | — | Pop all via drain iterator |
+| `mixed_workload` (1k) | 1.00x (lazy) | 5.5x | 2.5x | Interleaved push/decrease_key/pop |
+| `dijkstra_dense` (100) | 1.00x | 1.20x | — | Dense graph (n=100, m=5k) |
+| `dijkstra_dense` (1k) | 1.00x | 1.11x | — | Dense graph (n=1k, m=50k) |
+| `dijkstra_sparse` | 1.00x | **3.8x** | — | Sparse graph (n=10k, m=20k) |
+
+**Note on `decrease_key` fairness**: The BinaryHeap "lazy push" simulation only measures the cost of pushing a duplicate entry. It does *not* measure the extra pop-side cost from discarding stale duplicates. In a real Dijkstra implementation, the lazy approach adds overhead at pop time that this isolated benchmark does not capture. The algorithm-level Dijkstra benchmarks provide a more honest comparison.
 
 ## Implementations Compared
 
@@ -125,7 +145,7 @@ These results show relative performance (lower is better, 1.00x is fastest):
 | `piefibheap` | `pie_core::FibHeap` | Fibonacci heap with decrease_key |
 | `binaryheap` | `std::collections::BinaryHeap` | Binary heap, no decrease_key |
 | `priorityqueue` | `priority_queue::PriorityQueue` | Supports change_priority |
-| `extfibheap` | `fibonacci_heap::FibonacciHeap` | Another Fibonacci heap impl |
+| `extfibheap` | `fibonacci_heap::FibonacciHeap` | Another Fibonacci heap impl (no drain, uses Rc/RefCell) |
 
 ## Interpreting Results
 
@@ -157,6 +177,18 @@ cargo run -p bench-table -- --markdown
 
 # Combine options
 cargo run -p bench-table -- --split --full --category list
+
+# Show inline ASCII bar charts
+cargo run -p bench-table -- --bars
+
+# Quick one-line-per-category summary
+cargo run -p bench-table -- --summary
+
+# Regression comparison (requires both base and new benchmarks)
+cargo bench -- --save-baseline base
+# ... make changes ...
+cargo bench -- --save-baseline new
+cargo run -p bench-table -- --base --new
 ```
 
 ### Understanding the Tables
@@ -200,7 +232,7 @@ Based on actual benchmark results (N=10,000 elements unless noted):
 
 ### Use PieList When...
 
-✅ **Repeated middle insertions**: Inserting 100 elements at random positions—PieList is **415x faster** than Vec (grows with list size)
+✅ **Repeated middle insertions**: Inserting 100 elements at random positions—PieList is **426x faster** than Vec (grows with list size)
 ```rust
 // PieList: O(n) to find + O(1) to insert, repeated = O(n * k)
 // Vec: O(n) shift per insert, repeated = O(n * k) but with actual memory moves
@@ -211,7 +243,7 @@ Based on actual benchmark results (N=10,000 elements unless noted):
 cursor.splice_before(&mut other_list, &mut pool); // O(1)
 ```
 
-✅ **Front operations**: Push/splice at front—PieList is **7-1300x faster** than Vec
+✅ **Front operations**: Push/splice at front—PieList is **8-1530x faster** than Vec
 
 ✅ **Need stable indices**: Indices survive insertions/removals
 
@@ -219,11 +251,11 @@ cursor.splice_before(&mut other_list, &mut pool); // O(1)
 
 ### Use Vec Instead When...
 
-❌ **Random access by index**: Vec is **2400x faster** (O(1) vs O(n))
+❌ **Random access by index**: Vec is **2450x faster** (O(1) vs O(n))
 
-❌ **Sequential iteration**: Vec is **25x faster** (perfect cache locality)
+❌ **Sequential iteration**: Vec is **22x faster** (perfect cache locality)
 
-❌ **Sorting**: Vec is **10.6x faster** (pdqsort is heavily optimized)
+❌ **Sorting**: Vec is **10.2x faster** (pdqsort is heavily optimized)
 
 ❌ **Simple push/pop at ends only**: Vec has **2.6x less overhead**
 
@@ -231,15 +263,15 @@ cursor.splice_before(&mut other_list, &mut pool); // O(1)
 
 ✅ **Decrease-key is critical**: Dijkstra, Prim, A* algorithms
 
-✅ **Dense graphs**: FibHeap slightly outperforms BinaryHeap on dense graphs
+✅ **Dense graphs**: FibHeap is within 11% of BinaryHeap on dense graphs (n=1k), and the gap narrows with size
 
 ### Use BinaryHeap Instead When...
 
 ❌ **No decrease-key needed**: Simple task scheduling, event queues
 
-❌ **Maximum pop throughput**: BinaryHeap is **6x faster** for extraction
+❌ **Maximum pop throughput**: BinaryHeap is **8.5x faster** for extraction
 
-❌ **Sparse graphs**: BinaryHeap is **4x faster** on sparse graph Dijkstra
+❌ **Sparse graphs**: BinaryHeap is **3.8x faster** on sparse graph Dijkstra
 
 ## Fairness Notes
 
@@ -277,6 +309,59 @@ cargo bench -- list/append
 cargo bench -- pielist
 ```
 
+## Memory Usage Estimates
+
+These are computed from struct layouts (not runtime-measured). Actual memory depends on alignment and allocator overhead.
+
+### PieList per-element overhead
+
+Each element in a PieList is stored as an `Elem<T>` in the `ElemPool`:
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `next: Slot` | 4 bytes | Next-link (u32 index) |
+| `prev: Slot` | 4 bytes | Prev-link (u32 index) |
+| `vers: Generation` | 4 bytes | Generation counter + state (ABA protection) |
+| `data: MaybeUninit<T>` | size_of::\<T\>() | User data |
+| **Total per element** | **12 + size_of::\<T\>()** | (plus alignment padding) |
+
+For `T = u64` (8 bytes): **20 bytes per element** vs Vec's 8 bytes per element (**2.5x overhead**).
+
+Additionally, each PieList has a sentinel node (same size as a data element) and a list header:
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `sentinel: Index<T>` | 8 bytes | Handle to sentinel node |
+| `len: usize` | 8 bytes | Element count |
+
+### FibHeap per-entry overhead
+
+Each FibHeap entry is a `Node<K, V>` stored in the pool:
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `key: K` | size_of::\<K\>() | Priority key |
+| `value: V` | size_of::\<V\>() | User value |
+| `parent: FibHandle` | 8 bytes | Parent handle |
+| `children: PieList<Node>` | 16 bytes | Child list header |
+| `degree: usize` | 8 bytes | Number of children |
+| `marked: bool` | 1 byte (+7 padding) | Cut marker |
+| **Node subtotal** | **40 + K + V** | (with typical alignment) |
+| Elem wrapper | +12 bytes | next/prev/generation |
+| **Total per entry** | **~52 + K + V** | |
+
+For `K = usize, V = usize` (16 bytes): **~68 bytes per entry** vs BinaryHeap's ~16 bytes (**~4.3x overhead**). This overhead is the price for O(1) decrease_key.
+
+### Comparison summary
+
+| Implementation | Per-element (T=u64) | Notes |
+|----------------|---------------------|-------|
+| `Vec<T>` | 8 bytes | Contiguous, no overhead |
+| `VecDeque<T>` | 8 bytes | Ring buffer, same density |
+| `PieList<T>` | ~20 bytes | +12 bytes for links + generation |
+| `BinaryHeap<T>` | 8 bytes | Contiguous array |
+| `FibHeap<K,V>` | ~68 bytes (K=V=usize) | Rich node structure for O(1) decrease_key |
+
 ## Profiling Tips
 
 For deeper analysis:
@@ -297,8 +382,81 @@ valgrind --tool=massif cargo bench -- list/append/pielist
 
 When adding new benchmarks:
 
-1. **Use consistent naming**: `category/operation` group, implementation as function
+1. **Use consistent naming**: `category/operation` group, implementation as `BenchmarkId`
 2. **Test multiple sizes**: Use `SIZES` constant
 3. **Include competitors**: At least Vec/BinaryHeap as baseline
 4. **Document expected winner**: In comments, explain who should win and why
 5. **Use `black_box`**: Prevent compiler from optimizing away results
+6. **Document the real-world scenario**: Each benchmark must justify its existence with a concrete use case
+
+## Benchmark Coverage Analysis
+
+### What the Current Suite Proves
+
+1. **Structural mutations are PieList's strength**: The `multi_insert`, `splice_front`, and `prepend` benchmarks demonstrate orders-of-magnitude advantages for list mutations. The growing ratios with size confirm this is an algorithmic (O(1) vs O(n)) advantage, not just a constant-factor win.
+
+2. **Sequential access is Vec's strength**: The `iterate`, `random_access`, and `sort` benchmarks show that cache locality dominates for read-heavy workloads. These ratios are consistent across sizes, confirming it's a constant-factor (cache) difference.
+
+3. **FibHeap's decrease_key is genuine O(1)**: The `decrease_key` benchmark shows a clear advantage over PriorityQueue's O(log n) `change_priority`. BinaryHeap cannot even perform this operation natively.
+
+4. **End-to-end algorithm impact varies**: The Dijkstra benchmarks show that FibHeap's theoretical advantage does not always translate to a practical win. On sparse graphs, BinaryHeap's simplicity and cache locality compensate for its worse asymptotic `decrease_key`. On dense graphs (many relaxations), the gap narrows.
+
+5. **Pool sharing has modest benefits**: The `shared_lists` benchmark shows the pool model eliminates per-list allocation overhead, but the advantage is not dramatic for typical sizes.
+
+### What the Current Suite Cannot Prove
+
+These are gaps where the benchmark suite provides no data:
+
+1. **Memory efficiency**: No benchmark measures memory consumption. PieList stores two `Index<T>` pointers per node plus a generation counter, which may be significant for large element counts or constrained environments.
+
+2. **Mixed read-write workloads**: Every benchmark tests a single operation in isolation. Real workloads interleave reads, writes, and structural mutations. The iteration penalty may or may not matter when iteration is 5% of the workload.
+
+3. **FIFO/LIFO queue patterns**: `pop_front`/`pop_back` are not benchmarked independently. These are critical for queue and stack use cases where VecDeque is the natural competitor.
+
+4. **Retain/filter patterns**: `retain()` is not benchmarked. In-place filtering of a list is a common operation (e.g., removing dead entities from a game world).
+
+5. **ExtFibHeap consistency**: The external Fibonacci heap crate (`fibonacci_heap`) appears in `push` and `pop` benchmarks but is missing from `push_pop`, `decrease_key`, `peek`, and `drain`. This makes cross-implementation comparison incomplete.
+
+6. **Larger Dijkstra graphs**: The dense graph is only n=100, which is tiny. The sparse graph is 10k nodes but only has rightward and downward edges (no backtracking). More realistic graph topologies and sizes would strengthen the algorithm comparison.
+
+### How to Interpret Ratio Trends
+
+| Pattern | Meaning | Example |
+|---------|---------|---------|
+| Ratio is constant across sizes | Constant-factor difference (cache, overhead) | `iterate`: Vec ~25x faster at all sizes |
+| Ratio grows with size | Algorithmic complexity difference | `prepend`: Vec's O(n²) vs PieList's O(n) |
+| Ratio shrinks with size | Amortization kicking in | `push`: FibHeap overhead diluted at large N |
+| Ratio near 1.0x | Implementations are equivalent for this workload | `peek`: all heaps O(1) |
+
+## Terminal Visualization
+
+The `bench-table` tool provides colored terminal tables for quick comparison. Current features:
+
+- **Green** cells: Fastest or within 5% of fastest
+- **Red** cells: 2x or more slower than fastest
+- Multiple layout modes: `--split` (one table per operation), `--vertical`, `--combined`
+- Filtering: `--impl` and `--category` for focused comparisons
+
+### Recommended Workflows
+
+```bash
+# Quick overview: "Where does PieList win?"
+cargo run -p bench-table -- --split --impl pielist,vec
+
+# Heap comparison: "Is FibHeap worth it?"
+cargo run -p bench-table -- --category heap --full
+
+# Focus on the operations PieList is designed for
+cargo run -p bench-table -- --split --impl pielist,vec,vecdeque --category list
+
+# Generate tables for documentation
+cargo run -p bench-table -- --markdown --full
+```
+
+### Future Visualization Improvements
+
+The current tool shows relative performance ratios in tables. For a more intuitive "at a glance" view, planned improvements include:
+
+- **Inline bar charts**: Horizontal ASCII bars proportional to relative time within each table cell, so the magnitude of differences is visual rather than numeric
+- **Summary dashboard**: A single-screen overview showing the headline win/loss for each category
+- **Regression markers**: Indicators when a new benchmark run shows regression vs. a saved baseline

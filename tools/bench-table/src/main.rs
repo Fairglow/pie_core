@@ -41,6 +41,12 @@ fn get_benchmark_description(category: &str, operation: &str) -> Option<&'static
         ("list", "splice_front") => Some("Merge at front (no traversal). PieList O(1) vs Vec O(n)."),
         ("list", "sort") => Some("Sort in place. Vec's pdqsort is highly optimized."),
         ("list", "random_access") => Some("Random index lookups. Vec O(1) vs linked list O(n)."),
+        ("list", "pop_front") => Some("Pop all from front. PieList/VecDeque O(1), Vec O(n\u{00b2}) total."),
+        ("list", "pop_back") => Some("Pop all from back. All O(1) per pop."),
+        ("list", "retain") => Some("Filter ~50% in place. PieList unlinks, Vec shifts."),
+        ("list", "drain") => Some("Consume all via drain iterator."),
+        ("list", "cursor_traverse") => Some("Forward scan via cursor vs iterator."),
+        ("list", "split") => Some("Split at midpoint. PieList O(1) split + O(n/2) seek."),
 
         // Pool benchmarks
         ("pool", "shared_lists") => Some("Create N lists, fill, clear. Tests pool reuse vs individual Vecs."),
@@ -58,6 +64,8 @@ fn get_benchmark_description(category: &str, operation: &str) -> Option<&'static
         ("heap", "decrease_key") => Some("Update priorities. FibHeap O(1) - its key advantage!"),
         ("heap", "push_pop") => Some("Push N then pop N. Shows combined heap performance."),
         ("heap", "peek") => Some("Access minimum. All heaps O(1)."),
+        ("heap", "drain") => Some("Pop all via drain/extract. BinaryHeap simpler pop."),
+        ("heap", "mixed_workload") => Some("Interleaved push/decrease_key/pop (Dijkstra-like ratio)."),
 
         // Legacy heap naming
         ("other", "heap_push_sequential") => Some("Insert N elements. FibHeap O(1), BinaryHeap O(log n)."),
@@ -86,6 +94,8 @@ struct DisplayOptions {
     vertical_mode: bool,     // Rows are implementations, columns are operations
     split_mode: bool,        // One small table per operation
     show_absolute: bool,     // Show absolute times (default: only in non-compact)
+    show_bars: bool,         // Draw inline ASCII bar charts after relative times
+    summary_mode: bool,      // One-line-per-category overview
     filter_impls: Vec<String>, // Only show these implementations
     filter_category: Option<String>, // Only show this category
 }
@@ -98,6 +108,8 @@ impl Default for DisplayOptions {
             vertical_mode: false,
             split_mode: true,     // Split mode by default (one table per operation)
             show_absolute: true,  // Show absolute times by default
+            show_bars: false,
+            summary_mode: false,
             filter_impls: Vec::new(),
             filter_category: None,
         }
@@ -119,18 +131,28 @@ OPTIONS:
     --vertical      Vertical layout: implementations as rows
     --split         Split: one mini-table per operation (default)
     --combined      Combined: single table with all operations as columns
+    --bars          Draw inline ASCII bar charts proportional to slowdown
+    --summary       One-line-per-category overview (headline wins/losses)
     --impl LIST     Filter to specific implementations (comma-separated)
                     Example: --impl pielist,vec,binaryheap
     --category CAT  Filter to specific category
                     Example: --category list
     --help, -h      Show this help message
 
+REGRESSION DETECTION:
+    When both 'base' and 'new' baselines exist, pass both to compare:
+        bench-table --base --new
+    Results will show \u{2191} (faster) or \u{2193} (slower) markers with percentage change.
+
 EXAMPLES:
     bench-table                           # Default: split tables with full times
     bench-table --compact                 # Relative times only
+    bench-table --bars                    # With ASCII bar charts
+    bench-table --summary                 # Quick one-line-per-category overview
     bench-table --combined                # All operations in one wide table
     bench-table --impl pielist,vec        # Compare only pielist and vec
     bench-table --category heap           # Show only heap benchmarks
+    bench-table --base --new              # Compare base vs new for regressions
     bench-table --vertical --impl pielist,binaryheap
 ");
 }
@@ -163,6 +185,8 @@ fn main() {
             "--vertical" => options.vertical_mode = true,
             "--split" => options.split_mode = true,
             "--combined" => options.split_mode = false,
+            "--bars" => options.show_bars = true,
+            "--summary" => options.summary_mode = true,
             "--impl" => {
                 i += 1;
                 if i < args.len() {
@@ -201,14 +225,16 @@ fn main() {
         return;
     }
 
-    for version in versions {
+    // Collect results for regression comparison
+    let mut all_version_results: Vec<(&str, Vec<BenchResult>)> = Vec::new();
+    for version in &versions {
         info!("--- Processing version: {} ---", version);
         match find_and_parse_benchmarks(version) {
             Ok(results) => {
                 if results.is_empty() {
                     warn!("No benchmark results found for '{}'.", version);
                 } else {
-                    generate_tables(version, results, &options);
+                    all_version_results.push((version, results));
                 }
             }
             Err(e) => {
@@ -216,9 +242,23 @@ fn main() {
             }
         }
     }
-}
 
-/// Finds and parses all 'estimates.json' files for a specific version.
+    // Regression comparison: if we have both base and new, show markers
+    if all_version_results.len() == 2
+        && all_version_results[0].0 == "base"
+        && all_version_results[1].0 == "new"
+    {
+        generate_regression_table(&all_version_results[0].1, &all_version_results[1].1, &options);
+    } else if options.summary_mode {
+        for (version, results) in &all_version_results {
+            generate_summary(version, results, &options);
+        }
+    } else {
+        for (version, results) in all_version_results {
+            generate_tables(version, results, &options);
+        }
+    }
+}
 
 /// Finds and parses all 'estimates.json' files for a specific version.
 fn find_and_parse_benchmarks(
@@ -850,7 +890,13 @@ fn generate_split_table(
         println!("  \x1b[36m{}\x1b[0m", operation);
 
         if options.compact_mode {
-            table.set_header(vec![Cell::new("Impl"), Cell::new("Rel")]);
+            if options.show_bars {
+                table.set_header(vec![Cell::new("Impl"), Cell::new("Rel"), Cell::new("Bar")]);
+            } else {
+                table.set_header(vec![Cell::new("Impl"), Cell::new("Rel")]);
+            }
+        } else if options.show_bars {
+            table.set_header(vec![Cell::new("Impl"), Cell::new("Time"), Cell::new("Rel"), Cell::new("Bar")]);
         } else {
             table.set_header(vec![Cell::new("Impl"), Cell::new("Time"), Cell::new("Rel")]);
         }
@@ -875,6 +921,17 @@ fn generate_split_table(
                     rel_cell = rel_cell.fg(Color::Red);
                 }
                 row.add_cell(rel_cell);
+
+                if options.show_bars {
+                    let bar = format_bar(relative, 16);
+                    let mut bar_cell = Cell::new(&bar);
+                    if relative <= 1.05 {
+                        bar_cell = bar_cell.fg(Color::Green);
+                    } else if relative >= 2.0 {
+                        bar_cell = bar_cell.fg(Color::Red);
+                    }
+                    row.add_cell(bar_cell);
+                }
 
                 table.add_row(row);
             }
@@ -909,4 +966,184 @@ fn format_size(size: usize) -> String {
     } else {
         format!("{}", size)
     }
+}
+
+/// Draws an ASCII bar proportional to the relative slowdown.
+/// 1.00x gets a full bar (max_width chars), higher values get shorter bars
+/// (inverted so fastest = longest bar for visual impact).
+fn format_bar(relative: f64, max_width: usize) -> String {
+    // Clamp to max 10x for display purposes
+    let clamped = relative.min(10.0);
+    // Invert: 1.0x -> full bar, 10.0x -> tiny bar
+    let fraction = 1.0 / clamped;
+    let width = ((fraction * max_width as f64).round() as usize).max(1);
+    "\u{2588}".repeat(width)
+}
+
+/// Generates a one-line-per-category summary showing headline wins/losses.
+fn generate_summary(
+    version: &str,
+    results: &[BenchResult],
+    options: &DisplayOptions,
+) {
+    let grouped = group_results(results.to_vec());
+    println!("\n# Summary ({})\n", version);
+    if options.markdown_mode {
+        println!("| Category | Operation | Winner | Margin | Notes |");
+        println!("|:---|:---|:---|---:|:---|");
+    }
+    for (category, operations) in &grouped {
+        if let Some(ref filter_cat) = options.filter_category {
+            if !category.to_lowercase().contains(&filter_cat.to_lowercase()) {
+                continue;
+            }
+        }
+        for (operation, op_results) in operations {
+            if op_results.is_empty() {
+                continue;
+            }
+            let best = op_results.iter().min_by(|a, b| a.time_ns.partial_cmp(&b.time_ns).unwrap());
+            let worst = op_results.iter().max_by(|a, b| a.time_ns.partial_cmp(&b.time_ns).unwrap());
+            if let (Some(best), Some(worst)) = (best, worst) {
+                let margin = worst.time_ns / best.time_ns;
+                let desc = get_benchmark_description(category, operation).unwrap_or("");
+                if options.markdown_mode {
+                    println!("| {} | {} | {} | {:.1}x | {} |",
+                        category, operation, best.implementation, margin, desc);
+                } else {
+                    let margin_str = format!("{:.1}x", margin);
+                    let bar = if margin >= 2.0 {
+                        format!(" {}", format_bar(1.0, 16))
+                    } else {
+                        String::new()
+                    };
+                    println!("  {}/{}: \x1b[32m{}\x1b[0m wins by {}{}",
+                        category, operation, best.implementation, margin_str, bar);
+                }
+            }
+        }
+    }
+    println!();
+}
+
+/// Key for matching benchmarks across base/new versions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct BenchKey {
+    category: String,
+    operation: String,
+    implementation: String,
+    size: Option<usize>,
+}
+
+/// Generates a regression comparison table between base and new results.
+fn generate_regression_table(
+    base_results: &[BenchResult],
+    new_results: &[BenchResult],
+    options: &DisplayOptions,
+) {
+    use std::collections::BTreeMap;
+    let mut base_map: BTreeMap<BenchKey, f64> = BTreeMap::new();
+    for r in base_results {
+        let key = BenchKey {
+            category: r.category.clone(),
+            operation: r.operation.clone(),
+            implementation: r.implementation.clone(),
+            size: r.size,
+        };
+        base_map.insert(key, r.time_ns);
+    }
+    let mut new_map: BTreeMap<BenchKey, f64> = BTreeMap::new();
+    for r in new_results {
+        let key = BenchKey {
+            category: r.category.clone(),
+            operation: r.operation.clone(),
+            implementation: r.implementation.clone(),
+            size: r.size,
+        };
+        new_map.insert(key, r.time_ns);
+    }
+    println!("\n# Regression Report (base → new)\n");
+    if options.markdown_mode {
+        println!("| Benchmark | Impl | Size | Base | New | Change |");
+        println!("|:---|:---|---:|---:|---:|:---|");
+    } else {
+        let mut table = Table::new();
+        table.set_header(vec![
+            Cell::new("Benchmark"),
+            Cell::new("Impl"),
+            Cell::new("Size"),
+            Cell::new("Base"),
+            Cell::new("New"),
+            Cell::new("Change"),
+        ]);
+        let mut has_rows = false;
+        // Iterate over all keys present in either base or new
+        let mut all_keys: Vec<&BenchKey> = base_map.keys().chain(new_map.keys()).collect();
+        all_keys.sort();
+        all_keys.dedup();
+        for key in &all_keys {
+            if let Some(ref filter_cat) = options.filter_category {
+                if !key.category.to_lowercase().contains(&filter_cat.to_lowercase()) {
+                    continue;
+                }
+            }
+            let base_ns = base_map.get(key);
+            let new_ns = new_map.get(key);
+            if let (Some(&base), Some(&new)) = (base_ns, new_ns) {
+                let pct_change = ((new - base) / base) * 100.0;
+                let marker = if pct_change < -5.0 {
+                    format!("\x1b[32m\u{2191} {:.1}% faster\x1b[0m", -pct_change)
+                } else if pct_change > 5.0 {
+                    format!("\x1b[31m\u{2193} {:.1}% slower\x1b[0m", pct_change)
+                } else {
+                    format!("\u{2194} {:.1}%", pct_change)
+                };
+                let size_str = key.size.map_or("-".to_string(), |s| format_size(s));
+                let mut row = Row::new();
+                row.add_cell(Cell::new(format!("{}/{}", key.category, key.operation)));
+                row.add_cell(Cell::new(&key.implementation));
+                row.add_cell(Cell::new(&size_str));
+                row.add_cell(Cell::new(format_time(base)));
+                row.add_cell(Cell::new(format_time(new)));
+                row.add_cell(Cell::new(&marker));
+                table.add_row(row);
+                has_rows = true;
+            }
+        }
+        if has_rows {
+            println!("{}\n", table);
+        } else {
+            println!("  (no matching benchmarks found in both base and new)\n");
+        }
+        return;
+    }
+    // Markdown path
+    let mut all_keys: Vec<&BenchKey> = base_map.keys().chain(new_map.keys()).collect();
+    all_keys.sort();
+    all_keys.dedup();
+    for key in &all_keys {
+        if let Some(ref filter_cat) = options.filter_category {
+            if !key.category.to_lowercase().contains(&filter_cat.to_lowercase()) {
+                continue;
+            }
+        }
+        let base_ns = base_map.get(key);
+        let new_ns = new_map.get(key);
+        if let (Some(&base), Some(&new)) = (base_ns, new_ns) {
+            let pct_change = ((new - base) / base) * 100.0;
+            let marker = if pct_change < -5.0 {
+                format!("\u{2191} {:.1}% faster", -pct_change)
+            } else if pct_change > 5.0 {
+                format!("\u{2193} {:.1}% slower", pct_change)
+            } else {
+                format!("\u{2194} {:.1}%", pct_change)
+            };
+            let size_str = key.size.map_or("-".to_string(), |s| format_size(s));
+            println!("| {}/{} | {} | {} | {} | {} | {} |",
+                key.category, key.operation,
+                key.implementation, size_str,
+                format_time(base), format_time(new), marker);
+        }
+    }
+    println!();
 }

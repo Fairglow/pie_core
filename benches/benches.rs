@@ -2,12 +2,13 @@
 //!
 //! ## Naming Convention
 //!
-//! Benchmarks follow a strict `{category}/{implementation}/{operation}` pattern
-//! to enable easy comparison in the bench-table tool:
+//! Benchmarks follow a strict `{category}/{operation}/{implementation}[/{size}]`
+//! path in the criterion output directory, which the bench-table tool parses:
 //!
 //! - **category**: The type of data structure or algorithm being tested
-//! - **implementation**: Which crate/type is being benchmarked
 //! - **operation**: The specific operation being measured
+//! - **implementation**: Which crate/type is being benchmarked
+//! - **size**: Optional input size parameter
 //!
 //! ## Categories
 //!
@@ -916,6 +917,22 @@ fn bench_heap_push_pop(c: &mut Criterion) {
                 criterion::BatchSize::SmallInput,
             )
         });
+
+        group.bench_with_input(BenchmarkId::new("extfibheap", size), &size, |b, &n| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut heap = ExtFibHeap::new();
+                    for i in 0..n {
+                        heap.insert(black_box(i as i32)).unwrap();
+                    }
+                    for _ in 0..n {
+                        black_box(heap.extract_min());
+                    }
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
     }
 
     group.finish();
@@ -960,6 +977,15 @@ fn bench_heap_peek(c: &mut Criterion) {
 
     group.bench_function("priorityqueue", |b| {
         b.iter(|| black_box(pq_heap.peek()))
+    });
+
+    let mut ext_heap = ExtFibHeap::new();
+    for &key in &random_keys {
+        ext_heap.insert(key as i32).unwrap();
+    }
+
+    group.bench_function("extfibheap", |b| {
+        b.iter(|| black_box(ext_heap.peek_min()))
     });
 
     group.finish();
@@ -1107,25 +1133,44 @@ mod dijkstra_bench {
     }
 
     pub fn bench_dijkstra_dense(c: &mut Criterion) {
-        // n=100, m=5000 (close to n²/2 - very dense)
-        let dense_graph = create_dense_graph(100, 5000);
-        let start_node = dense_graph.node_indices().next().unwrap();
-
         let mut group = c.benchmark_group("algo/dijkstra_dense");
 
-        group.bench_function("petgraph_binaryheap", |b| {
+        // n=100, m=5000 (close to n²/2 - very dense)
+        let dense_small = create_dense_graph(100, 5000);
+        let start_small = dense_small.node_indices().next().unwrap();
+
+        group.bench_function("petgraph_binaryheap/100", |b| {
             b.iter(|| {
                 dijkstra(
-                    black_box(&dense_graph),
-                    black_box(start_node),
+                    black_box(&dense_small),
+                    black_box(start_small),
                     None,
                     |e| *e.weight(),
                 )
             })
         });
 
-        group.bench_function("pie_core_fibheap", |b| {
-            b.iter(|| dijkstra_pie_core(black_box(&dense_graph), black_box(start_node)))
+        group.bench_function("pie_core_fibheap/100", |b| {
+            b.iter(|| dijkstra_pie_core(black_box(&dense_small), black_box(start_small)))
+        });
+
+        // n=1000, m=50000 (medium-dense, shows scaling)
+        let dense_medium = create_dense_graph(1000, 50_000);
+        let start_medium = dense_medium.node_indices().next().unwrap();
+
+        group.bench_function("petgraph_binaryheap/1000", |b| {
+            b.iter(|| {
+                dijkstra(
+                    black_box(&dense_medium),
+                    black_box(start_medium),
+                    None,
+                    |e| *e.weight(),
+                )
+            })
+        });
+
+        group.bench_function("pie_core_fibheap/1000", |b| {
+            b.iter(|| dijkstra_pie_core(black_box(&dense_medium), black_box(start_medium)))
         });
 
         group.finish();
@@ -1342,6 +1387,26 @@ fn bench_heap_drain(c: &mut Criterion) {
                 criterion::BatchSize::SmallInput,
             )
         });
+
+        group.bench_with_input(BenchmarkId::new("extfibheap", size), &size, |b, &_n| {
+            b.iter_batched(
+                || {
+                    let mut heap = ExtFibHeap::new();
+                    for &key in &random_keys {
+                        heap.insert(key as i32).unwrap();
+                    }
+                    heap
+                },
+                |mut heap| {
+                    let mut count = 0usize;
+                    while heap.extract_min().is_some() {
+                        count += 1;
+                    }
+                    black_box(count)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
     }
 
     group.finish();
@@ -1472,9 +1537,9 @@ fn bench_list_split(c: &mut Criterion) {
                 },
                 |(mut pool, mut list)| {
                     let mut cursor = list.cursor_mut_at(n / 2, &mut pool).unwrap();
-                    let front = cursor.split_before(&mut pool).unwrap();
+                    let mut front = cursor.split_before(&mut pool).unwrap();
                     black_box(front.len());
-                    // Cleanup: re-splice to avoid drop overhead in measurement
+                    front.clear(&mut pool);
                 },
                 criterion::BatchSize::SmallInput,
             )
@@ -1497,6 +1562,256 @@ fn bench_list_split(c: &mut Criterion) {
 }
 
 // ============================================================================
+// List Benchmarks: Pop Front (FIFO drain)
+// ============================================================================
+// Shows: Pop from front pattern. PieList/VecDeque are O(1), Vec is O(n).
+// Models queue (FIFO) or stack-from-front patterns.
+
+fn bench_list_pop_front(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/pop_front");
+    for &size in SIZES {
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    while list.pop_front(&mut pool).is_some() {}
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vec", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<Vec<_>>(),
+                |mut vec| {
+                    while !vec.is_empty() {
+                        vec.remove(0);
+                    }
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vecdeque", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<VecDeque<_>>(),
+                |mut deque| {
+                    while deque.pop_front().is_some() {}
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+// ============================================================================
+// List Benchmarks: Pop Back (LIFO drain)
+// ============================================================================
+// Shows: Pop from back pattern. All are O(1) (Vec pop, VecDeque pop_back,
+// PieList pop_back). This is the stack (LIFO) pattern.
+
+fn bench_list_pop_back(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/pop_back");
+    for &size in SIZES {
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    while list.pop_back(&mut pool).is_some() {}
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vec", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<Vec<_>>(),
+                |mut vec| {
+                    while vec.pop().is_some() {}
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vecdeque", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<VecDeque<_>>(),
+                |mut deque| {
+                    while deque.pop_back().is_some() {}
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+// ============================================================================
+// List Benchmarks: Retain (in-place filtering)
+// ============================================================================
+// Shows: Filtering ~50% of elements in place. PieList retain unlinks nodes,
+// Vec retain shifts elements. Models removing dead entities or stale entries.
+
+fn bench_list_retain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list/retain");
+    for &size in SIZES {
+        group.bench_with_input(BenchmarkId::new("pielist", size), &size, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut pool = ElemPool::new();
+                    let mut list = PieList::new(&mut pool);
+                    for i in 0..n {
+                        list.push_back(i as u64, &mut pool).unwrap();
+                    }
+                    (pool, list)
+                },
+                |(mut pool, mut list)| {
+                    list.retain(&mut pool, |x| *x % 2 == 0);
+                    black_box(list.len());
+                    list.clear(&mut pool);
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vec", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<Vec<_>>(),
+                |mut vec| {
+                    vec.retain(|x| *x % 2 == 0);
+                    black_box(vec.len());
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        group.bench_with_input(BenchmarkId::new("vecdeque", size), &size, |b, &n| {
+            b.iter_batched(
+                || (0..n as u64).collect::<VecDeque<_>>(),
+                |mut deque| {
+                    deque.retain(|x| *x % 2 == 0);
+                    black_box(deque.len());
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+// ============================================================================
+// Heap Benchmarks: Mixed Workload (simulates Dijkstra-like access pattern)
+// ============================================================================
+// Shows: Interleaved push/decrease_key/pop in a ratio typical of graph
+// algorithms (~3 pushes, ~2 decrease_keys per pop). Isolates heap behavior
+// from graph traversal overhead.
+
+fn bench_heap_mixed_workload(c: &mut Criterion) {
+    let mut group = c.benchmark_group("heap/mixed_workload");
+    let mut rng = StdRng::seed_from_u64(42);
+    for &size in SIZES {
+        let mut random_order: Vec<usize> = (0..size).collect();
+        random_order.shuffle(&mut rng);
+        let random_order = random_order;
+        // PieFibHeap: O(1) push, O(1) decrease_key, O(log n) amortized pop
+        group.bench_with_input(BenchmarkId::new("piefibheap", size), &size, |b, &n| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut heap = PieFibHeap::new();
+                    let mut handles = Vec::with_capacity(n);
+                    let mut popped = 0usize;
+                    for i in 0..n {
+                        handles.push(heap.push(n * 2 + random_order[i], i));
+                        if i >= 2 && i % 3 == 0 {
+                            let dk_idx = random_order[i % handles.len()];
+                            if dk_idx < handles.len() {
+                                heap.decrease_key(handles[dk_idx], black_box(i)).ok();
+                            }
+                            if i % 2 == 0 && dk_idx + 1 < handles.len() {
+                                heap.decrease_key(handles[dk_idx + 1], black_box(i + 1)).ok();
+                            }
+                            black_box(heap.pop());
+                            popped += 1;
+                        }
+                    }
+                    while heap.pop().is_some() {
+                        popped += 1;
+                    }
+                    black_box(popped)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        // BinaryHeap with lazy decrease_key simulation
+        group.bench_with_input(BenchmarkId::new("binaryheap_lazy", size), &size, |b, &n| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut heap = BinaryHeap::new();
+                    let mut popped = 0usize;
+                    for i in 0..n {
+                        heap.push(Reverse((n * 2 + random_order[i], i)));
+                        if i >= 2 && i % 3 == 0 {
+                            let dk_idx = random_order[i % n];
+                            heap.push(Reverse((i, dk_idx)));
+                            if i % 2 == 0 {
+                                heap.push(Reverse((i + 1, (dk_idx + 1) % n)));
+                            }
+                            black_box(heap.pop());
+                            popped += 1;
+                        }
+                    }
+                    while heap.pop().is_some() {
+                        popped += 1;
+                    }
+                    black_box(popped)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+        // PriorityQueue: O(log n) change_priority
+        group.bench_with_input(BenchmarkId::new("priorityqueue", size), &size, |b, &n| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut heap = PriorityQueue::new();
+                    let mut popped = 0usize;
+                    for i in 0..n {
+                        heap.push(n + i, Reverse(n * 2 + random_order[i]));
+                        if i >= 2 && i % 3 == 0 {
+                            let dk_idx = random_order[i % n];
+                            heap.change_priority(&(n + dk_idx), Reverse(i));
+                            if i % 2 == 0 {
+                                let dk_idx2 = (dk_idx + 1) % n;
+                                heap.change_priority(&(n + dk_idx2), Reverse(i + 1));
+                            }
+                            black_box(heap.pop());
+                            popped += 1;
+                        }
+                    }
+                    while heap.pop().is_some() {
+                        popped += 1;
+                    }
+                    black_box(popped)
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+// ============================================================================
 // Benchmark Registration
 // ============================================================================
 
@@ -1514,6 +1829,9 @@ fn register_benches(c: &mut Criterion) {
     bench_list_drain(c);
     bench_list_cursor_traverse(c);
     bench_list_split(c);
+    bench_list_pop_front(c);
+    bench_list_pop_back(c);
+    bench_list_retain(c);
 
     // Pool sharing benchmarks
     bench_pool_shared_lists(c);
@@ -1526,6 +1844,7 @@ fn register_benches(c: &mut Criterion) {
     bench_heap_push_pop(c);
     bench_heap_peek(c);
     bench_heap_drain(c);
+    bench_heap_mixed_workload(c);
 
     // Nightly-only benchmarks
     #[cfg(feature = "bench-nightly")]
